@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,8 +71,7 @@ func NewManager(db *gorm.DB, webPort int) *Manager {
 
 // StartServer starts the web management server
 func (wm *Manager) StartServer() error {
-	// Setup routes
-	http.HandleFunc("/", wm.handleIndex)
+	// Setup API routes
 	http.HandleFunc("/api/status", wm.handleStatus)
 	http.HandleFunc("/api/users", wm.handleUsers)
 	http.HandleFunc("/api/whitelist", wm.handleWhitelist)
@@ -81,6 +81,9 @@ func (wm *Manager) StartServer() error {
 	http.HandleFunc("/api/system/settings", wm.handleSystemSettings)
 	http.HandleFunc("/api/timeout", wm.handleTimeout)
 
+	// Static files and SPA fallback (must be last)
+	http.HandleFunc("/", wm.handleIndex)
+
 	// Only listen on localhost for security
 	addr := fmt.Sprintf("localhost:%d", wm.webPort)
 	fmt.Printf("Web management interface started at http://%s\n", addr)
@@ -89,10 +92,32 @@ func (wm *Manager) StartServer() error {
 	return http.ListenAndServe(addr, nil)
 }
 
-// handleIndex serves the main HTML page
+// handleIndex serves the static files and SPA fallback
 func (wm *Manager) handleIndex(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(IndexHTML))
+	// If requesting API path, return 404
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Get embedded static file system
+	staticFS, err := GetStaticFS()
+	if err != nil {
+		http.Error(w, "Failed to load static files", http.StatusInternalServerError)
+		return
+	}
+
+	// Create file server
+	fileServer := http.FileServer(http.FS(staticFS))
+
+	// If requested file doesn't exist, serve index.html (SPA fallback)
+	if r.URL.Path != "/" {
+		if _, err := staticFS.Open(strings.TrimPrefix(r.URL.Path, "/")); err != nil {
+			r.URL.Path = "/"
+		}
+	}
+
+	fileServer.ServeHTTP(w, r)
 }
 
 // handleStatus returns the current status of proxy servers

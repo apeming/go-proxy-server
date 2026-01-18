@@ -26,6 +26,16 @@ bin/
 build/
 dist/
 
+# Frontend
+web-ui/node_modules/
+web-ui/dist/
+web-ui/.vite/
+internal/web/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
 # Windows resource files (auto-generated)
 *.syso
 *_windows_*.syso
