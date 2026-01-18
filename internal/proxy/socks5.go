@@ -12,10 +12,8 @@ import (
 
 	"go-proxy-server/internal/auth"
 	"go-proxy-server/internal/config"
-	"go-proxy-server/internal/constants"
 	"go-proxy-server/internal/logger"
 	"go-proxy-server/internal/security"
-	"go-proxy-server/internal/utils"
 )
 
 // SOCKS5 protocol constants
@@ -58,13 +56,6 @@ const (
 	maxPasswordLen  = 128
 	maxDomainLen    = 255 // RFC 1035: maximum domain name length
 )
-
-// Buffer pool for reducing memory allocations
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, constants.BufferSizeSmall)
-	},
-}
 
 func HandleSocks5Connection(conn net.Conn, bindListen bool) {
 	defer conn.Close()
@@ -220,7 +211,7 @@ func HandleSocks5Connection(conn net.Conn, bindListen bool) {
 	// Client to destination
 	go func() {
 		defer wg.Done()
-		err := utils.CopyWithIdleTimeout(ctx, destConn, conn, timeout.IdleRead, timeout.IdleWrite)
+		err := copyWithIdleTimeout(ctx, destConn, conn, timeout.IdleRead, timeout.IdleWrite)
 		if tcpConn, ok := destConn.(*net.TCPConn); ok {
 			tcpConn.CloseWrite()
 		}
@@ -230,7 +221,7 @@ func HandleSocks5Connection(conn net.Conn, bindListen bool) {
 	// Destination to client
 	go func() {
 		defer wg.Done()
-		err := utils.CopyWithIdleTimeout(ctx, conn, destConn, timeout.IdleRead, timeout.IdleWrite)
+		err := copyWithIdleTimeout(ctx, conn, destConn, timeout.IdleRead, timeout.IdleWrite)
 		if tcpConn, ok := conn.(*net.TCPConn); ok {
 			tcpConn.CloseWrite()
 		}

@@ -1,4 +1,4 @@
-package sysconfig
+package config
 
 import (
 	"errors"
@@ -8,12 +8,13 @@ import (
 	"go-proxy-server/internal/models"
 )
 
+// System configuration keys
 const (
 	KeyAutoStart = "autostart_enabled"
 )
 
-// GetConfig gets a configuration value
-func GetConfig(db *gorm.DB, key string) (string, error) {
+// GetSystemConfig gets a system configuration value
+func GetSystemConfig(db *gorm.DB, key string) (string, error) {
 	var config models.SystemConfig
 	err := db.Where("key = ?", key).First(&config).Error
 	if err != nil {
@@ -25,8 +26,8 @@ func GetConfig(db *gorm.DB, key string) (string, error) {
 	return config.Value, nil
 }
 
-// SetConfig sets a configuration value
-func SetConfig(db *gorm.DB, key, value string) error {
+// SetSystemConfig sets a system configuration value
+func SetSystemConfig(db *gorm.DB, key, value string) error {
 	var config models.SystemConfig
 	err := db.Where("key = ?", key).First(&config).Error
 
@@ -46,7 +47,7 @@ func SetConfig(db *gorm.DB, key, value string) error {
 	return db.Save(&config).Error
 }
 
-// DeleteConfig deletes a configuration
-func DeleteConfig(db *gorm.DB, key string) error {
+// DeleteSystemConfig deletes a system configuration
+func DeleteSystemConfig(db *gorm.DB, key string) error {
 	return db.Unscoped().Where("key = ?", key).Delete(&models.SystemConfig{}).Error
 }

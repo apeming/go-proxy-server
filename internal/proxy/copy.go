@@ -1,4 +1,4 @@
-package utils
+package proxy
 
 import (
 	"context"
@@ -11,21 +11,21 @@ import (
 	"go-proxy-server/internal/logger"
 )
 
-// BufferPool is a pool of byte buffers to reduce GC pressure
+// bufferPool is a pool of byte buffers to reduce GC pressure
 // Uses large buffer size for bulk data transfers
-var BufferPool = sync.Pool{
+var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, constants.BufferSizeLarge)
 	},
 }
 
-// CopyWithIdleTimeout copies data from src to dst with idle timeout
+// copyWithIdleTimeout copies data from src to dst with idle timeout
 // It resets the deadline after each successful read/write operation
 // Uses buffer pool to reduce GC pressure
-func CopyWithIdleTimeout(ctx context.Context, dst, src net.Conn, readTimeout, writeTimeout time.Duration) error {
+func copyWithIdleTimeout(ctx context.Context, dst, src net.Conn, readTimeout, writeTimeout time.Duration) error {
 	// Get buffer from pool
-	buf := BufferPool.Get().([]byte)
-	defer BufferPool.Put(buf) // Return buffer to pool when done
+	buf := bufferPool.Get().([]byte)
+	defer bufferPool.Put(buf) // Return buffer to pool when done
 
 	for {
 		// Check if context is cancelled

@@ -22,7 +22,6 @@ import (
 	applogger "go-proxy-server/internal/logger"
 	"go-proxy-server/internal/models"
 	"go-proxy-server/internal/proxy"
-	"go-proxy-server/internal/proxyconfig"
 	"go-proxy-server/internal/tray"
 	"go-proxy-server/internal/web"
 )
@@ -244,14 +243,14 @@ func main() {
 			webManager := web.NewManager(db, 9090)
 
 			// Auto-start proxies based on saved configuration
-			if socksConfig, err := proxyconfig.LoadConfigFromDB(db, "socks5"); err == nil && socksConfig != nil && socksConfig.AutoStart {
+			if socksConfig, err := config.LoadProxyConfig(db, "socks5"); err == nil && socksConfig != nil && socksConfig.AutoStart {
 				applogger.Info("Auto-starting SOCKS5 proxy on port %d", socksConfig.Port)
 				if err := webManager.AutoStartProxy("socks5", socksConfig.Port, socksConfig.BindListen); err != nil {
 					applogger.Error("Failed to auto-start SOCKS5 proxy: %v", err)
 				}
 			}
 
-			if httpConfig, err := proxyconfig.LoadConfigFromDB(db, "http"); err == nil && httpConfig != nil && httpConfig.AutoStart {
+			if httpConfig, err := config.LoadProxyConfig(db, "http"); err == nil && httpConfig != nil && httpConfig.AutoStart {
 				applogger.Info("Auto-starting HTTP proxy on port %d", httpConfig.Port)
 				if err := webManager.AutoStartProxy("http", httpConfig.Port, httpConfig.BindListen); err != nil {
 					applogger.Error("Failed to auto-start HTTP proxy: %v", err)
@@ -387,14 +386,14 @@ func main() {
 			webManager := web.NewManager(db, *webPort)
 
 			// Auto-start proxies based on saved configuration
-			if socksConfig, err := proxyconfig.LoadConfigFromDB(db, "socks5"); err == nil && socksConfig != nil && socksConfig.AutoStart {
+			if socksConfig, err := config.LoadProxyConfig(db, "socks5"); err == nil && socksConfig != nil && socksConfig.AutoStart {
 				applogger.Info("Auto-starting SOCKS5 proxy on port %d", socksConfig.Port)
 				if err := webManager.AutoStartProxy("socks5", socksConfig.Port, socksConfig.BindListen); err != nil {
 					applogger.Error("Failed to auto-start SOCKS5 proxy: %v", err)
 				}
 			}
 
-			if httpConfig, err := proxyconfig.LoadConfigFromDB(db, "http"); err == nil && httpConfig != nil && httpConfig.AutoStart {
+			if httpConfig, err := config.LoadProxyConfig(db, "http"); err == nil && httpConfig != nil && httpConfig.AutoStart {
 				applogger.Info("Auto-starting HTTP proxy on port %d", httpConfig.Port)
 				if err := webManager.AutoStartProxy("http", httpConfig.Port, httpConfig.BindListen); err != nil {
 					applogger.Error("Failed to auto-start HTTP proxy: %v", err)

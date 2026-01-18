@@ -17,7 +17,6 @@ import (
 	"go-proxy-server/internal/constants"
 	"go-proxy-server/internal/logger"
 	"go-proxy-server/internal/security"
-	"go-proxy-server/internal/utils"
 )
 
 // Transport pool for connection reuse to destination servers
@@ -394,7 +393,7 @@ func handleHTTPSConnect(conn net.Conn, req *http.Request, bindListen bool, local
 	// Client to destination
 	go func() {
 		defer wg.Done()
-		err := utils.CopyWithIdleTimeout(ctx, destConn, conn, timeout.IdleRead, timeout.IdleWrite)
+		err := copyWithIdleTimeout(ctx, destConn, conn, timeout.IdleRead, timeout.IdleWrite)
 		if tcpConn, ok := destConn.(*net.TCPConn); ok {
 			tcpConn.CloseWrite()
 		}
@@ -404,7 +403,7 @@ func handleHTTPSConnect(conn net.Conn, req *http.Request, bindListen bool, local
 	// Destination to client
 	go func() {
 		defer wg.Done()
-		err := utils.CopyWithIdleTimeout(ctx, conn, destConn, timeout.IdleRead, timeout.IdleWrite)
+		err := copyWithIdleTimeout(ctx, conn, destConn, timeout.IdleRead, timeout.IdleWrite)
 		if tcpConn, ok := conn.(*net.TCPConn); ok {
 			tcpConn.CloseWrite()
 		}

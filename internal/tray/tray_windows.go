@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm"
 
 	"go-proxy-server/internal/auth"
+	"go-proxy-server/internal/config"
 	"go-proxy-server/internal/logger"
-	"go-proxy-server/internal/proxyconfig"
 	"go-proxy-server/internal/web"
 )
 
@@ -52,14 +52,14 @@ func onReady(webPort int) func() {
 		globalWebManager = web.NewManager(globalDB, webPort)
 
 		// Auto-start proxies based on saved configuration
-		if socksConfig, err := proxyconfig.LoadConfigFromDB(globalDB, "socks5"); err == nil && socksConfig != nil && socksConfig.AutoStart {
+		if socksConfig, err := config.LoadProxyConfig(globalDB, "socks5"); err == nil && socksConfig != nil && socksConfig.AutoStart {
 			logger.Info("Auto-starting SOCKS5 proxy on port %d", socksConfig.Port)
 			if err := globalWebManager.AutoStartProxy("socks5", socksConfig.Port, socksConfig.BindListen); err != nil {
 				logger.Error("Failed to auto-start SOCKS5 proxy: %v", err)
 			}
 		}
 
-		if httpConfig, err := proxyconfig.LoadConfigFromDB(globalDB, "http"); err == nil && httpConfig != nil && httpConfig.AutoStart {
+		if httpConfig, err := config.LoadProxyConfig(globalDB, "http"); err == nil && httpConfig != nil && httpConfig.AutoStart {
 			logger.Info("Auto-starting HTTP proxy on port %d", httpConfig.Port)
 			if err := globalWebManager.AutoStartProxy("http", httpConfig.Port, httpConfig.BindListen); err != nil {
 				logger.Error("Failed to auto-start HTTP proxy: %v", err)

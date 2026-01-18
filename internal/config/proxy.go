@@ -1,4 +1,4 @@
-package proxyconfig
+package config
 
 import (
 	"errors"
@@ -9,8 +9,8 @@ import (
 	"go-proxy-server/internal/models"
 )
 
-// LoadConfigFromDB loads proxy configuration from database by type
-func LoadConfigFromDB(db *gorm.DB, proxyType string) (*models.ProxyConfig, error) {
+// LoadProxyConfig loads proxy configuration from database by type
+func LoadProxyConfig(db *gorm.DB, proxyType string) (*models.ProxyConfig, error) {
 	var config models.ProxyConfig
 	err := db.Where("type = ?", proxyType).First(&config).Error
 	if err != nil {
@@ -22,8 +22,8 @@ func LoadConfigFromDB(db *gorm.DB, proxyType string) (*models.ProxyConfig, error
 	return &config, nil
 }
 
-// SaveConfigToDB saves proxy configuration to database
-func SaveConfigToDB(db *gorm.DB, config *models.ProxyConfig) error {
+// SaveProxyConfig saves proxy configuration to database
+func SaveProxyConfig(db *gorm.DB, config *models.ProxyConfig) error {
 	if config.Type != "socks5" && config.Type != "http" {
 		return fmt.Errorf("invalid proxy type: %s", config.Type)
 	}
@@ -44,13 +44,13 @@ func SaveConfigToDB(db *gorm.DB, config *models.ProxyConfig) error {
 	return db.Save(config).Error
 }
 
-// DeleteConfigFromDB deletes proxy configuration from database
-func DeleteConfigFromDB(db *gorm.DB, proxyType string) error {
+// DeleteProxyConfig deletes proxy configuration from database
+func DeleteProxyConfig(db *gorm.DB, proxyType string) error {
 	// Use Unscoped to permanently delete the record (hard delete)
 	return db.Unscoped().Where("type = ?", proxyType).Delete(&models.ProxyConfig{}).Error
 }
 
-// UpdateAutoStart updates only the AutoStart field for a proxy type
-func UpdateAutoStart(db *gorm.DB, proxyType string, autoStart bool) error {
+// UpdateProxyAutoStart updates only the AutoStart field for a proxy type
+func UpdateProxyAutoStart(db *gorm.DB, proxyType string, autoStart bool) error {
 	return db.Model(&models.ProxyConfig{}).Where("type = ?", proxyType).Update("auto_start", autoStart).Error
 }
