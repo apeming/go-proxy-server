@@ -1,0 +1,421 @@
+package proxy
+
+import (
+	"bufio"
+	"context"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"go-proxy-server/internal/auth"
+	"go-proxy-server/internal/config"
+	"go-proxy-server/internal/constants"
+	"go-proxy-server/internal/logger"
+	"go-proxy-server/internal/utils"
+)
+
+// Transport pool for connection reuse to destination servers
+var (
+	defaultTransport *http.Transport
+	transportOnce    sync.Once
+)
+
+// getDefaultTransport returns a shared HTTP transport with connection pooling
+func getDefaultTransport() *http.Transport {
+	transportOnce.Do(func() {
+		defaultTransport = &http.Transport{
+			MaxIdleConns:        constants.HTTPPoolMaxIdleConns,
+			MaxIdleConnsPerHost: constants.HTTPPoolMaxIdleConnsPerHost,
+			IdleConnTimeout:     constants.HTTPPoolIdleConnTimeout,
+			DisableKeepAlives:   false,
+			DisableCompression:  false,
+		}
+	})
+	return defaultTransport
+}
+
+// writeHTTPError writes an HTTP error response to the connection
+func writeHTTPError(conn net.Conn, statusCode int, statusText string, headers map[string]string) error {
+	resp := &http.Response{
+		Status:     fmt.Sprintf("%d %s", statusCode, statusText),
+		StatusCode: statusCode,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("")),
+	}
+
+	// Set default headers
+	resp.Header.Set("Content-Length", "0")
+	resp.Header.Set("Connection", "close")
+
+	// Set custom headers
+	for k, v := range headers {
+		resp.Header.Set(k, v)
+	}
+
+	return resp.Write(conn)
+}
+
+// validateAndConnect performs SSRF check, establishes connection, and verifies connected IP
+// Returns the connection and any error encountered
+func validateAndConnect(host string, bindListen bool, localAddr *net.TCPAddr, timeout config.TimeoutConfig) (net.Conn, error) {
+	// Check for SSRF attacks (prevent access to private IPs)
+	if err := auth.CheckSSRF(host); err != nil {
+		// Don't log the host to avoid leaking user's target destinations
+		logger.Warn("SSRF protection triggered")
+		return nil, fmt.Errorf("SSRF protection: %w", err)
+	}
+
+	// Connect to the destination host with timeout
+	dialer := &net.Dialer{
+		Timeout: timeout.Connect,
+	}
+	if bindListen {
+		dialer.LocalAddr = localAddr
+	}
+	destConn, err := dialer.Dial("tcp", host)
+	if err != nil {
+		logger.Error("Failed to connect to destination host: %v", err)
+		return nil, fmt.Errorf("connection failed: %w", err)
+	}
+
+	// Verify connected IP to prevent DNS rebinding attacks
+	if err := auth.VerifyConnectedIP(destConn); err != nil {
+		// Don't log the error details to avoid leaking target IP information
+		logger.Warn("DNS rebinding protection triggered")
+		destConn.Close()
+		return nil, fmt.Errorf("DNS rebinding protection: %w", err)
+	}
+
+	return destConn, nil
+}
+
+// shouldCloseConnection determines if the connection should be closed based on HTTP headers
+// Returns true if connection should be closed, false if it can be kept alive
+func shouldCloseConnection(req *http.Request, resp *http.Response) bool {
+	// Close connection if either client or server requests it
+	if strings.ToLower(req.Header.Get("Connection")) == "close" {
+		return true
+	}
+	if strings.ToLower(resp.Header.Get("Connection")) == "close" {
+		return true
+	}
+	// HTTP/1.0 defaults to close unless explicitly kept alive
+	if req.ProtoMajor == 1 && req.ProtoMinor == 0 {
+		if strings.ToLower(req.Header.Get("Connection")) != "keep-alive" {
+			return true
+		}
+	}
+	return false
+}
+
+func HandleHTTPConnection(conn net.Conn, bindListen bool) {
+	defer conn.Close()
+
+	// Get local and remote TCP addresses with type assertion checks
+	tcpLocalAddr, ok := conn.LocalAddr().(*net.TCPAddr)
+	if !ok {
+		logger.Error("Connection is not TCP")
+		return
+	}
+	localAddr := &net.TCPAddr{IP: tcpLocalAddr.IP}
+
+	// Get the client's IP address
+	clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		logger.Error("Connection is not TCP")
+		return
+	}
+	clientIP := clientAddr.IP.String()
+
+	// Get timeout configuration once at the beginning
+	timeout := config.GetTimeout()
+
+	// Create buffered reader with increased buffer size for persistent connection support
+	reader := bufio.NewReaderSize(conn, constants.BufferSizeSmall)
+
+	// Connection-level authentication state for Keep-Alive optimization
+	// Track request count to periodically re-verify credentials for security
+	var isAuthenticated bool
+	var requestCount int
+
+	// Handle multiple requests on the same connection (HTTP/1.1 Keep-Alive)
+	for {
+		// Set read timeout for waiting for next request (use IdleRead timeout)
+		conn.SetReadDeadline(time.Now().Add(timeout.IdleRead))
+
+		// Read the HTTP request
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			// EOF or timeout is normal for persistent connections
+			if err == io.EOF {
+				// Client closed connection gracefully
+				return
+			}
+			// Check for timeout or connection reset
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Idle timeout reached, close connection
+				return
+			}
+			// Check for connection reset or other network errors
+			if strings.Contains(err.Error(), "connection reset") ||
+				strings.Contains(err.Error(), "broken pipe") {
+				// Connection closed by peer
+				return
+			}
+			// Other errors are unexpected
+			logger.Error("Failed to read HTTP request: %v", err)
+			return
+		}
+
+		// Increment request count and check if re-authentication is needed
+		requestCount++
+		if requestCount > constants.MaxRequestsBeforeReauth {
+			// Reset authentication state to force re-verification
+			isAuthenticated = false
+			requestCount = 0
+		}
+
+		// Check authentication
+		// For Keep-Alive connections, use cached authentication state to avoid repeated bcrypt verification
+		// but re-verify periodically for security
+		authenticated := isAuthenticated
+
+		if !authenticated {
+			// Check if the client's IP address is in the whitelist first
+			if auth.CheckIPWhitelist(clientIP) {
+				authenticated = true
+				isAuthenticated = true
+			} else {
+				// Check for Proxy-Authorization header
+				authHeader := req.Header.Get("Proxy-Authorization")
+				if authHeader != "" {
+					// Parse Basic authentication
+					if strings.HasPrefix(authHeader, "Basic ") {
+						encoded := strings.TrimPrefix(authHeader, "Basic ")
+						decoded, err := base64.StdEncoding.DecodeString(encoded)
+						if err == nil {
+							authParts := strings.SplitN(string(decoded), ":", 2)
+							if len(authParts) == 2 {
+								username := authParts[0]
+								password := authParts[1]
+
+								// Verify credentials
+								if auth.VerifyCredentials(username, []byte(password)) == nil {
+									authenticated = true
+									isAuthenticated = true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if !authenticated {
+			// Send 407 Proxy Authentication Required
+			headers := map[string]string{
+				"Proxy-Authenticate": "Basic realm=\"Proxy\"",
+			}
+			if err := writeHTTPError(conn, http.StatusProxyAuthRequired, "Proxy Authentication Required", headers); err != nil {
+				logger.Error("Failed to write authentication response: %v", err)
+			}
+			return
+		}
+
+		// Handle the request based on method
+		if req.Method == http.MethodConnect {
+			// HTTPS tunneling (CONNECT method) - closes connection after tunnel
+			handleHTTPSConnect(conn, req, bindListen, localAddr, timeout)
+			return
+		} else {
+			// Regular HTTP proxy - may support keep-alive
+			shouldClose := handleHTTPRequest(conn, req, reader, bindListen, localAddr, timeout)
+			if shouldClose {
+				return
+			}
+		}
+	}
+}
+
+func handleHTTPSConnect(conn net.Conn, req *http.Request, bindListen bool, localAddr *net.TCPAddr, timeout config.TimeoutConfig) {
+	// Extract host and port from request
+	host := req.Host
+	if !strings.Contains(host, ":") {
+		host = host + ":443"
+	}
+
+	// Validate and connect to destination (includes SSRF check and DNS rebinding protection)
+	destConn, err := validateAndConnect(host, bindListen, localAddr, timeout)
+	if err != nil {
+		// Determine response based on error type
+		if strings.Contains(err.Error(), "SSRF protection") || strings.Contains(err.Error(), "DNS rebinding") {
+			writeHTTPError(conn, http.StatusForbidden, "Forbidden", nil)
+		} else {
+			writeHTTPError(conn, http.StatusBadGateway, "Bad Gateway", nil)
+		}
+		return
+	}
+	defer destConn.Close()
+
+	// Send 200 Connection Established response
+	resp := &http.Response{
+		Status:     "200 Connection Established",
+		StatusCode: 200,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+	}
+	err = resp.Write(conn)
+	if err != nil {
+		logger.Error("Failed to send response: %v", err)
+		return
+	}
+
+	// Create context for cancellation with maximum connection age
+	ctx, cancel := context.WithTimeout(context.Background(), timeout.MaxConnectionAge)
+	defer cancel()
+
+	// Start bidirectional data transfer with idle timeout
+	errChan := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Client to destination
+	go func() {
+		defer wg.Done()
+		err := utils.CopyWithIdleTimeout(ctx, destConn, conn, timeout.IdleRead, timeout.IdleWrite)
+		if tcpConn, ok := destConn.(*net.TCPConn); ok {
+			tcpConn.CloseWrite()
+		}
+		errChan <- err
+	}()
+
+	// Destination to client
+	go func() {
+		defer wg.Done()
+		err := utils.CopyWithIdleTimeout(ctx, conn, destConn, timeout.IdleRead, timeout.IdleWrite)
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			tcpConn.CloseWrite()
+		}
+		errChan <- err
+	}()
+
+	// Wait for first goroutine to complete or timeout
+	select {
+	case <-errChan:
+		// First goroutine finished
+	case <-ctx.Done():
+		// Timeout reached
+		logger.Info("HTTPS tunnel maximum age reached, closing connection")
+	}
+
+	// Cancel context to stop the other goroutine
+	cancel()
+
+	// Wait for both goroutines to finish with cleanup timeout
+	cleanupDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(cleanupDone)
+	}()
+
+	select {
+	case <-cleanupDone:
+		// Both goroutines finished gracefully
+	case <-time.After(timeout.CleanupTimeout):
+		// Force close if cleanup takes too long
+		logger.Warn("Force closing HTTPS tunnel after cleanup timeout")
+	}
+}
+
+func handleHTTPRequest(conn net.Conn, req *http.Request, reader *bufio.Reader, bindListen bool, localAddr *net.TCPAddr, timeout config.TimeoutConfig) bool {
+	// Extract host from request
+	host := req.Host
+	if !strings.Contains(host, ":") {
+		host = host + ":80"
+	}
+
+	// SSRF check before making request
+	if err := auth.CheckSSRF(host); err != nil {
+		writeHTTPError(conn, http.StatusForbidden, "Forbidden", nil)
+		return true // Close connection
+	}
+
+	// Remove Proxy-Authorization header before forwarding
+	req.Header.Del("Proxy-Authorization")
+	req.Header.Del("Proxy-Connection")
+
+	// Convert request to absolute form to relative form
+	req.RequestURI = ""
+
+	// Use HTTP client with connection pooling
+	client := &http.Client{
+		Transport: getDefaultTransport(),
+		Timeout:   timeout.IdleRead + timeout.IdleWrite,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Don't follow redirects automatically
+			return http.ErrUseLastResponse
+		},
+	}
+
+	// If bind-listen mode, create custom transport with local address
+	if bindListen {
+		customTransport := &http.Transport{
+			MaxIdleConns:        constants.HTTPPoolMaxIdleConns,
+			MaxIdleConnsPerHost: constants.HTTPPoolMaxIdleConnsPerHost,
+			IdleConnTimeout:     constants.HTTPPoolIdleConnTimeout,
+			DisableKeepAlives:   false,
+			DisableCompression:  false,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				dialer := &net.Dialer{
+					LocalAddr: localAddr,
+					Timeout:   timeout.Connect,
+				}
+				return dialer.DialContext(ctx, network, addr)
+			},
+		}
+		client.Transport = customTransport
+	}
+
+	// Make the request
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Error("Failed to make HTTP request: %v", err)
+		writeHTTPError(conn, http.StatusBadGateway, "Bad Gateway", nil)
+		return true // Close connection
+	}
+	defer resp.Body.Close()
+
+	// Verify connected IP to prevent DNS rebinding attacks
+	// Note: This is a best-effort check since we're using http.Client
+	// For stricter security, consider using the direct connection approach
+
+	// Check if connection should be kept alive using helper function
+	shouldClose := shouldCloseConnection(req, resp)
+
+	// Ensure Connection header is set correctly in response
+	if shouldClose {
+		resp.Header.Set("Connection", "close")
+	}
+
+	// Set write timeout for sending response
+	conn.SetWriteDeadline(time.Now().Add(timeout.IdleWrite))
+
+	// Write response to client
+	err = resp.Write(conn)
+	if err != nil {
+		logger.Error("Failed to write response to client: %v", err)
+		return true // Close connection
+	}
+
+	return shouldClose
+}
