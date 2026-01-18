@@ -93,7 +93,7 @@ func LoadTimeoutFromDB(db *gorm.DB) error {
 	return nil
 }
 
-// SaveTimeoutToDB saves timeout configuration to database
+// SaveTimeoutToDB saves timeout configuration to database with transaction
 func SaveTimeoutToDB(db *gorm.DB, timeout TimeoutConfig) error {
 	configs := []models.SystemConfig{
 		{Key: "timeout_connect", Value: fmt.Sprintf("%d", int(timeout.Connect.Seconds()))},
@@ -103,27 +103,35 @@ func SaveTimeoutToDB(db *gorm.DB, timeout TimeoutConfig) error {
 		{Key: "timeout_cleanup", Value: fmt.Sprintf("%d", int(timeout.CleanupTimeout.Seconds()))},
 	}
 
-	for _, cfg := range configs {
-		// Use GORM's Save which will update if exists or create if not
-		var existing models.SystemConfig
-		err := db.Where("key = ?", cfg.Key).First(&existing).Error
-		if err == gorm.ErrRecordNotFound {
-			// Create new record
-			if err := db.Create(&cfg).Error; err != nil {
+	// Use transaction to ensure all configs are saved atomically
+	err := db.Transaction(func(tx *gorm.DB) error {
+		for _, cfg := range configs {
+			// Use GORM's Save which will update if exists or create if not
+			var existing models.SystemConfig
+			err := tx.Where("key = ?", cfg.Key).First(&existing).Error
+			if err == gorm.ErrRecordNotFound {
+				// Create new record
+				if err := tx.Create(&cfg).Error; err != nil {
+					return err
+				}
+			} else if err != nil {
 				return err
-			}
-		} else if err != nil {
-			return err
-		} else {
-			// Update existing record
-			existing.Value = cfg.Value
-			if err := db.Save(&existing).Error; err != nil {
-				return err
+			} else {
+				// Update existing record
+				existing.Value = cfg.Value
+				if err := tx.Save(&existing).Error; err != nil {
+					return err
+				}
 			}
 		}
+		return nil
+	})
+
+	if err != nil {
+		return err
 	}
 
-	// Update in-memory configuration
+	// Update in-memory configuration only after successful database save
 	timeoutMu.Lock()
 	currentTimeout = timeout
 	timeoutMu.Unlock()

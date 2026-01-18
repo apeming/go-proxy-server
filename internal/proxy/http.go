@@ -16,6 +16,7 @@ import (
 	"go-proxy-server/internal/config"
 	"go-proxy-server/internal/constants"
 	"go-proxy-server/internal/logger"
+	"go-proxy-server/internal/security"
 	"go-proxy-server/internal/utils"
 )
 
@@ -49,15 +50,31 @@ func putReader(reader *bufio.Reader) {
 	readerPool.Put(reader)
 }
 
-// getDefaultTransport returns a shared HTTP transport with connection pooling
+// getDefaultTransport returns a shared HTTP transport with connection pooling and DNS rebinding protection
 func getDefaultTransport() *http.Transport {
 	transportOnce.Do(func() {
+		timeout := config.GetTimeout()
 		defaultTransport = &http.Transport{
 			MaxIdleConns:        constants.HTTPPoolMaxIdleConns,
 			MaxIdleConnsPerHost: constants.HTTPPoolMaxIdleConnsPerHost,
 			IdleConnTimeout:     constants.HTTPPoolIdleConnTimeout,
 			DisableKeepAlives:   false,
 			DisableCompression:  false,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				dialer := &net.Dialer{
+					Timeout: timeout.Connect,
+				}
+				conn, err := dialer.DialContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				// Verify connected IP to prevent DNS rebinding attacks
+				if err := security.VerifyConnectedIP(conn); err != nil {
+					conn.Close()
+					return nil, err
+				}
+				return conn, nil
+			},
 		}
 	})
 	return defaultTransport
@@ -73,7 +90,7 @@ func getTransportForLocalAddr(localAddr *net.TCPAddr, timeout config.TimeoutConf
 		return cached.(*http.Transport)
 	}
 
-	// Create new transport with local address binding
+	// Create new transport with local address binding and DNS rebinding protection
 	transport := &http.Transport{
 		MaxIdleConns:        constants.HTTPPoolMaxIdleConns,
 		MaxIdleConnsPerHost: constants.HTTPPoolMaxIdleConnsPerHost,
@@ -85,7 +102,16 @@ func getTransportForLocalAddr(localAddr *net.TCPAddr, timeout config.TimeoutConf
 				LocalAddr: localAddr,
 				Timeout:   timeout.Connect,
 			}
-			return dialer.DialContext(ctx, network, addr)
+			conn, err := dialer.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			// Verify connected IP to prevent DNS rebinding attacks
+			if err := security.VerifyConnectedIP(conn); err != nil {
+				conn.Close()
+				return nil, err
+			}
+			return conn, nil
 		},
 	}
 
@@ -132,7 +158,7 @@ func writeHTTPError(conn net.Conn, statusCode int, statusText string, headers ma
 // Returns the connection and any error encountered
 func validateAndConnect(host string, bindListen bool, localAddr *net.TCPAddr, timeout config.TimeoutConfig) (net.Conn, error) {
 	// Check for SSRF attacks (prevent access to private IPs)
-	if err := auth.CheckSSRF(host); err != nil {
+	if err := security.CheckSSRF(host); err != nil {
 		// Don't log the host to avoid leaking user's target destinations
 		logger.Warn("SSRF protection triggered")
 		return nil, fmt.Errorf("SSRF protection: %w", err)
@@ -152,7 +178,7 @@ func validateAndConnect(host string, bindListen bool, localAddr *net.TCPAddr, ti
 	}
 
 	// Verify connected IP to prevent DNS rebinding attacks
-	if err := auth.VerifyConnectedIP(destConn); err != nil {
+	if err := security.VerifyConnectedIP(destConn); err != nil {
 		// Don't log the error details to avoid leaking target IP information
 		logger.Warn("DNS rebinding protection triggered")
 		destConn.Close()
@@ -421,7 +447,7 @@ func handleHTTPRequest(conn net.Conn, req *http.Request, reader *bufio.Reader, b
 	}
 
 	// SSRF check before making request
-	if err := auth.CheckSSRF(host); err != nil {
+	if err := security.CheckSSRF(host); err != nil {
 		writeHTTPError(conn, http.StatusForbidden, "Forbidden", nil)
 		return true // Close connection
 	}
@@ -461,9 +487,8 @@ func handleHTTPRequest(conn net.Conn, req *http.Request, reader *bufio.Reader, b
 	}
 	defer resp.Body.Close()
 
-	// Verify connected IP to prevent DNS rebinding attacks
-	// Note: This is a best-effort check since we're using http.Client
-	// For stricter security, consider using the direct connection approach
+	// Note: DNS rebinding protection is now handled in the Transport's DialContext
+	// See getDefaultTransport() and getTransportForLocalAddr() for implementation
 
 	// Check if connection should be kept alive using helper function
 	shouldClose := shouldCloseConnection(req, resp)

@@ -14,6 +14,7 @@ import (
 	"go-proxy-server/internal/config"
 	"go-proxy-server/internal/constants"
 	"go-proxy-server/internal/logger"
+	"go-proxy-server/internal/security"
 	"go-proxy-server/internal/utils"
 )
 
@@ -152,7 +153,7 @@ func HandleSocks5Connection(conn net.Conn, bindListen bool) {
 	}
 
 	// Check for SSRF attacks (prevent access to private IPs)
-	if err := auth.CheckSSRF(host); err != nil {
+	if err := security.CheckSSRF(host); err != nil {
 		// Don't log the error details to avoid leaking target host information
 		logger.Info("SSRF protection triggered for connection from %s", clientIP)
 		sendSocks5Reply(conn, replyConnectionNotAllowed)
@@ -197,7 +198,7 @@ func HandleSocks5Connection(conn net.Conn, bindListen bool) {
 	defer destConn.Close()
 
 	// Verify connected IP to prevent DNS rebinding attacks
-	if err := auth.VerifyConnectedIP(destConn); err != nil {
+	if err := security.VerifyConnectedIP(destConn); err != nil {
 		// Don't log the error details to avoid leaking target IP information
 		logger.Info("DNS rebinding protection triggered for connection from %s", clientIP)
 		sendSocks5Reply(conn, replyConnectionNotAllowed)

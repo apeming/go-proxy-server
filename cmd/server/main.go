@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -24,6 +26,26 @@ import (
 	"go-proxy-server/internal/tray"
 	"go-proxy-server/internal/web"
 )
+
+// setupCleanupHandler sets up signal handlers for graceful shutdown
+func setupCleanupHandler() {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		applogger.Info("Received shutdown signal, cleaning up...")
+
+		// Close all HTTP transport connections
+		proxy.CloseAllTransports()
+		applogger.Info("All transport connections closed")
+
+		// Close logger
+		applogger.Close()
+
+		os.Exit(0)
+	}()
+}
 
 // startConfigReloader starts a background goroutine to reload configuration periodically
 func startConfigReloader(db *gorm.DB) {
@@ -112,6 +134,9 @@ func main() {
 		// Continue anyway
 	}
 	defer applogger.Close()
+
+	// Setup cleanup handler for graceful shutdown
+	setupCleanupHandler()
 
 	applogger.Info("Go Proxy Server starting...")
 

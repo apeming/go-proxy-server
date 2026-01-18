@@ -57,14 +57,27 @@ func (cl *ConnectionLimiter) Acquire(clientIP string) bool {
 
 // Release releases a connection slot for the given IP
 func (cl *ConnectionLimiter) Release(clientIP string) {
-	// Decrement per-IP counter
+	// Decrement per-IP counter with protection against negative values
 	if counterInterface, ok := cl.perIPCounters.Load(clientIP); ok {
 		counter := counterInterface.(*int32)
-		newCount := atomic.AddInt32(counter, -1)
 
-		// Clean up counter if it reaches zero to prevent memory leak
-		if newCount <= 0 {
-			cl.perIPCounters.Delete(clientIP)
+		// Use CAS loop to ensure we don't go below zero
+		for {
+			oldCount := atomic.LoadInt32(counter)
+			if oldCount <= 0 {
+				// Already at zero or negative (shouldn't happen), don't decrement
+				break
+			}
+			newCount := oldCount - 1
+			if atomic.CompareAndSwapInt32(counter, oldCount, newCount) {
+				// Successfully decremented
+				// Clean up counter if it reaches zero to prevent memory leak
+				if newCount == 0 {
+					cl.perIPCounters.Delete(clientIP)
+				}
+				break
+			}
+			// CAS failed, retry
 		}
 	}
 
@@ -75,8 +88,12 @@ func (cl *ConnectionLimiter) Release(clientIP string) {
 		// Should not happen, but handle gracefully
 	}
 
-	// Decrement total counter
-	cl.totalConnections.Add(-1)
+	// Decrement total counter (use Add with negative value, which is atomic)
+	newTotal := cl.totalConnections.Add(-1)
+	// Ensure total doesn't go negative
+	if newTotal < 0 {
+		cl.totalConnections.Store(0)
+	}
 }
 
 // GetTotalConnections returns the current number of active connections

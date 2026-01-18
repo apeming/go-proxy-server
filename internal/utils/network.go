@@ -43,9 +43,14 @@ func CopyWithIdleTimeout(ctx context.Context, dst, src net.Conn, readTimeout, wr
 			// Set write deadline (idle timeout)
 			dst.SetWriteDeadline(time.Now().Add(writeTimeout))
 
-			_, writeErr := dst.Write(buf[:n])
-			if writeErr != nil {
-				return writeErr
+			// Ensure all data is written (handle partial writes)
+			written := 0
+			for written < n {
+				nw, writeErr := dst.Write(buf[written:n])
+				if writeErr != nil {
+					return writeErr
+				}
+				written += nw
 			}
 		}
 

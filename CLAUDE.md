@@ -17,11 +17,13 @@ The project follows the standard Go project layout:
 │       └── main.go
 ├── internal/               # Private application packages
 │   ├── auth/              # Authentication and authorization
+│   ├── cache/             # Generic caching infrastructure
 │   ├── config/            # Configuration management
 │   ├── httpproxy/         # HTTP/HTTPS proxy implementation
 │   ├── logger/            # Logging utilities
 │   ├── models/            # Database models
 │   ├── proxy/             # SOCKS5 proxy implementation
+│   ├── security/          # SSRF and security protection
 │   ├── tray/              # System tray (Windows only)
 │   └── web/               # Web management interface
 ├── scripts/               # Build and utility scripts
@@ -147,16 +149,48 @@ When run without arguments:
 - Returns 407 Proxy Authentication Required on auth failure
 - Supports bind-listen mode for both CONNECT and regular requests
 
-**internal/auth/auth.go** - Authentication and access control
-- IP whitelist management (database-based, cached in memory)
-- User credential management (database-based with bcrypt)
-- Thread-safe access with `sync.RWMutex` for both whitelist and credentials
-- `LoadCredentialsFromDB()` and `LoadWhitelistFromDB()` for hot-reloading
+**internal/auth/** - Authentication and authorization package (modular design)
+
+**internal/auth/auth.go** - Core authentication logic
 - `VerifyCredentials()`: Validates username/password with timing attack protection
-- `CheckIPWhitelist()`: Checks if IP is whitelisted (no automatic local bypass)
+- `VerifyCredentialsWithCache()`: Cached credential verification to reduce bcrypt overhead
+- `CheckAuthCache()`, `SetAuthCache()`: Authentication result caching (5-minute TTL)
+- `cleanupAuthCache()`: Periodic cleanup of expired auth cache entries
+- Uses constant-time comparison to prevent timing attacks
+- Shared by both SOCKS5 and HTTP proxies
+
+**internal/auth/user.go** - User management
+- `LoadCredentialsFromDB()`: Loads user credentials from database with hot-reloading support
+- `AddUser()`: Creates new user with password strength validation
+- `DeleteUser()`: Removes user from database
+- `ListUsers()`: Lists all users
+- `validatePasswordStrength()`: Enforces password requirements (min 8 chars, letter + digit)
+- Thread-safe credential storage using atomic.Value for lock-free reads
+
+**internal/auth/whitelist.go** - IP whitelist management
+- `CheckIPWhitelist()`: Checks if client IP is whitelisted (no automatic local bypass)
+- `LoadWhitelistFromDB()`: Loads IP whitelist from database with hot-reloading
+- `AddIPToWhitelist()`: Adds IP to whitelist with validation
+- `DeleteIPFromWhitelist()`: Removes IP from whitelist
+- `GetWhitelistIPs()`: Returns all whitelisted IPs
+- Thread-safe whitelist storage using atomic.Value for lock-free reads
+
+**internal/security/security.go** - SSRF and DNS rebinding protection
 - `CheckSSRF()`: Validates target hosts to prevent SSRF attacks (blocks private IPs)
 - `IsPrivateIP()`: Detects private/internal IP addresses (RFC 1918, RFC 3927, RFC 4193)
-- Shared by both SOCKS5 and HTTP proxies
+- `VerifyConnectedIP()`: Verifies actual connected IP to prevent DNS rebinding attacks
+- `cleanupDNSCache()`: Periodic cleanup of expired DNS cache entries (10-minute interval)
+- DNS caching with 5-minute TTL to reduce lookup overhead
+- Used by both SOCKS5 and HTTP proxy implementations
+
+**internal/cache/lru.go** - Generic caching infrastructure
+- `ShardedLRU`: High-performance sharded LRU cache implementation
+- `NewShardedLRU()`: Creates cache with configurable capacity and shard count
+- 16 shards by default for reduced lock contention in high-concurrency scenarios
+- Generic `Entry` type with expiration support
+- Automatic eviction of least-recently-used entries when capacity is reached
+- Thread-safe with per-shard locking
+- Reusable by any package needing caching (currently used for DNS caching)
 
 **internal/models/user.go** - Database schema
 - `User` model with GORM: Username globally unique, IP field for audit/logging only
