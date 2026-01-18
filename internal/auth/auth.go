@@ -35,9 +35,15 @@ type authCacheEntry struct {
 	expiresAt     time.Time
 }
 
-// lruCache implements a simple LRU cache for DNS entries
-type lruCache struct {
-	mu       sync.Mutex
+// shardedLRUCache implements a sharded LRU cache for better concurrency
+// Each shard has its own lock, reducing lock contention
+type shardedLRUCache struct {
+	shards   []*lruCacheShard
+	numShards int
+}
+
+type lruCacheShard struct {
+	mu       sync.RWMutex
 	capacity int
 	cache    map[string]*list.Element
 	lruList  *list.List
@@ -67,94 +73,125 @@ var (
 	credWriteLock      sync.Mutex
 	// Dummy hash for timing attack protection (generated at init)
 	dummyHash []byte
-	// DNS cache with LRU eviction
-	dnsLRUCache *lruCache
+	// DNS cache with sharded LRU eviction for better concurrency
+	dnsLRUCache *shardedLRUCache
 	// Authentication cache for SOCKS5 (key: hash(clientIP+username), value: authCacheEntry)
 	authCache sync.Map
 	// Auth cache cleanup started flag
 	authCacheCleanupStarted atomic.Bool
 )
 
-// newLRUCache creates a new LRU cache with the specified capacity
-func newLRUCache(capacity int) *lruCache {
-	return &lruCache{
-		capacity: capacity,
-		cache:    make(map[string]*list.Element),
-		lruList:  list.New(),
+// newShardedLRUCache creates a new sharded LRU cache with the specified capacity
+func newShardedLRUCache(totalCapacity int, numShards int) *shardedLRUCache {
+	if numShards <= 0 {
+		numShards = 16 // default to 16 shards
+	}
+	shardCapacity := totalCapacity / numShards
+	if shardCapacity < 10 {
+		shardCapacity = 10 // minimum capacity per shard
+	}
+
+	shards := make([]*lruCacheShard, numShards)
+	for i := 0; i < numShards; i++ {
+		shards[i] = &lruCacheShard{
+			capacity: shardCapacity,
+			cache:    make(map[string]*list.Element),
+			lruList:  list.New(),
+		}
+	}
+
+	return &shardedLRUCache{
+		shards:   shards,
+		numShards: numShards,
 	}
 }
 
-// Get retrieves a value from the LRU cache
-func (c *lruCache) Get(key string) (dnsCacheEntry, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// getShard returns the shard for a given key using hash-based distribution
+func (c *shardedLRUCache) getShard(key string) *lruCacheShard {
+	// Use FNV-1a hash for fast, well-distributed hashing
+	hash := uint32(2166136261)
+	for i := 0; i < len(key); i++ {
+		hash ^= uint32(key[i])
+		hash *= 16777619
+	}
+	return c.shards[hash%uint32(c.numShards)]
+}
 
-	if elem, ok := c.cache[key]; ok {
+// Get retrieves a value from the sharded LRU cache
+func (c *shardedLRUCache) Get(key string) (dnsCacheEntry, bool) {
+	shard := c.getShard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if elem, ok := shard.cache[key]; ok {
 		entry := elem.Value.(*lruEntry)
 		// Check if expired
 		if time.Now().After(entry.value.expiresAt) {
 			// Remove expired entry
-			c.lruList.Remove(elem)
-			delete(c.cache, key)
+			shard.lruList.Remove(elem)
+			delete(shard.cache, key)
 			return dnsCacheEntry{}, false
 		}
 		// Move to front (most recently used)
-		c.lruList.MoveToFront(elem)
+		shard.lruList.MoveToFront(elem)
 		return entry.value, true
 	}
 	return dnsCacheEntry{}, false
 }
 
-// Put adds or updates a value in the LRU cache
-func (c *lruCache) Put(key string, value dnsCacheEntry) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// Put adds or updates a value in the sharded LRU cache
+func (c *shardedLRUCache) Put(key string, value dnsCacheEntry) {
+	shard := c.getShard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
 	// Update existing entry
-	if elem, ok := c.cache[key]; ok {
-		c.lruList.MoveToFront(elem)
+	if elem, ok := shard.cache[key]; ok {
+		shard.lruList.MoveToFront(elem)
 		elem.Value.(*lruEntry).value = value
 		return
 	}
 
 	// Add new entry
 	entry := &lruEntry{key: key, value: value}
-	elem := c.lruList.PushFront(entry)
-	c.cache[key] = elem
+	elem := shard.lruList.PushFront(entry)
+	shard.cache[key] = elem
 
 	// Evict least recently used if over capacity
-	if c.lruList.Len() > c.capacity {
-		oldest := c.lruList.Back()
+	if shard.lruList.Len() > shard.capacity {
+		oldest := shard.lruList.Back()
 		if oldest != nil {
-			c.lruList.Remove(oldest)
-			delete(c.cache, oldest.Value.(*lruEntry).key)
+			shard.lruList.Remove(oldest)
+			delete(shard.cache, oldest.Value.(*lruEntry).key)
 		}
 	}
 }
 
-// CleanExpired removes all expired entries from the cache
-func (c *lruCache) CleanExpired() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// CleanExpired removes all expired entries from all shards
+func (c *shardedLRUCache) CleanExpired() int {
+	total := 0
+	for _, shard := range c.shards {
+		shard.mu.Lock()
+		now := time.Now()
+		removed := 0
 
-	now := time.Now()
-	removed := 0
+		// Iterate through all entries and remove expired ones
+		for elem := shard.lruList.Back(); elem != nil; {
+			entry := elem.Value.(*lruEntry)
+			prev := elem.Prev()
 
-	// Iterate through all entries and remove expired ones
-	for elem := c.lruList.Back(); elem != nil; {
-		entry := elem.Value.(*lruEntry)
-		prev := elem.Prev()
+			if now.After(entry.value.expiresAt) {
+				shard.lruList.Remove(elem)
+				delete(shard.cache, entry.key)
+				removed++
+			}
 
-		if now.After(entry.value.expiresAt) {
-			c.lruList.Remove(elem)
-			delete(c.cache, entry.key)
-			removed++
+			elem = prev
 		}
-
-		elem = prev
+		total += removed
+		shard.mu.Unlock()
 	}
-
-	return removed
+	return total
 }
 
 func init() {
@@ -162,8 +199,8 @@ func init() {
 	ipWhitelistAtomic.Store(&whitelistMap{data: make(map[string]bool)})
 	credentialsAtomic.Store(&credentialsMap{data: make(Credentials)})
 
-	// Initialize DNS LRU cache
-	dnsLRUCache = newLRUCache(constants.DNSCacheMaxSize)
+	// Initialize sharded DNS LRU cache with 16 shards for better concurrency
+	dnsLRUCache = newShardedLRUCache(constants.DNSCacheMaxSize, 16)
 
 	// Generate dummy hash at initialization for timing attack protection
 	// This prevents attackers from distinguishing between valid and invalid usernames

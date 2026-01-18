@@ -68,6 +68,22 @@ var bufferPool = sync.Pool{
 func HandleSocks5Connection(conn net.Conn, bindListen bool) {
 	defer conn.Close()
 
+	// Get the client's IP address early for rate limiting
+	clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		logger.Error("Connection is not TCP")
+		return
+	}
+	clientIP := clientAddr.IP.String()
+
+	// Apply connection rate limiting
+	limiter := GetSOCKS5Limiter()
+	if !limiter.Acquire(clientIP) {
+		logger.Warn("Connection limit reached for IP %s", clientIP)
+		return
+	}
+	defer limiter.Release(clientIP)
+
 	// Initial version/method negotiation
 	methods, err := readMethods(conn)
 	if err != nil {
@@ -82,14 +98,6 @@ func HandleSocks5Connection(conn net.Conn, bindListen bool) {
 		return
 	}
 	localAddr := &net.TCPAddr{IP: tcpLocalAddr.IP}
-
-	// Get the client's IP address
-	clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
-	if !ok {
-		logger.Error("Connection is not TCP")
-		return
-	}
-	clientIP := clientAddr.IP.String()
 
 	// Check if the client's IP address is in the whitelist first
 	if auth.CheckIPWhitelist(clientIP) {

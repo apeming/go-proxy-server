@@ -78,3 +78,14 @@ const (
 	// AcceptErrorBackoff is the backoff duration after an accept error
 	AcceptErrorBackoff = 100 * time.Millisecond
 )
+
+// Concurrency limits
+const (
+	// MaxConcurrentConnections is the maximum number of concurrent connections
+	// This prevents resource exhaustion under high load
+	MaxConcurrentConnections = 10000
+
+	// MaxConcurrentConnectionsPerIP is the maximum number of concurrent connections per IP
+	// This prevents a single IP from consuming all resources
+	MaxConcurrentConnectionsPerIP = 100
+)

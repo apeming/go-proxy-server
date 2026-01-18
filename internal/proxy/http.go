@@ -23,7 +23,31 @@ import (
 var (
 	defaultTransport *http.Transport
 	transportOnce    sync.Once
+	// Transport cache for bind-listen mode: map[localIP] -> *http.Transport
+	// Caches transports per local address to enable connection pooling
+	transportCache sync.Map
 )
+
+// Buffer pool for bufio.Reader to reduce memory allocations
+var readerPool = sync.Pool{
+	New: func() interface{} {
+		return bufio.NewReaderSize(nil, constants.BufferSizeSmall)
+	},
+}
+
+// getReader gets a bufio.Reader from the pool and resets it with the given connection
+func getReader(conn net.Conn) *bufio.Reader {
+	reader := readerPool.Get().(*bufio.Reader)
+	reader.Reset(conn)
+	return reader
+}
+
+// putReader returns a bufio.Reader to the pool
+func putReader(reader *bufio.Reader) {
+	// Reset with nil to release the connection reference
+	reader.Reset(nil)
+	readerPool.Put(reader)
+}
 
 // getDefaultTransport returns a shared HTTP transport with connection pooling
 func getDefaultTransport() *http.Transport {
@@ -37,6 +61,47 @@ func getDefaultTransport() *http.Transport {
 		}
 	})
 	return defaultTransport
+}
+
+// getTransportForLocalAddr returns a cached HTTP transport for the given local address
+// This enables connection pooling in bind-listen mode where each local IP needs its own transport
+func getTransportForLocalAddr(localAddr *net.TCPAddr, timeout config.TimeoutConfig) *http.Transport {
+	key := localAddr.IP.String()
+
+	// Try to load existing transport from cache
+	if cached, ok := transportCache.Load(key); ok {
+		return cached.(*http.Transport)
+	}
+
+	// Create new transport with local address binding
+	transport := &http.Transport{
+		MaxIdleConns:        constants.HTTPPoolMaxIdleConns,
+		MaxIdleConnsPerHost: constants.HTTPPoolMaxIdleConnsPerHost,
+		IdleConnTimeout:     constants.HTTPPoolIdleConnTimeout,
+		DisableKeepAlives:   false,
+		DisableCompression:  false,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialer := &net.Dialer{
+				LocalAddr: localAddr,
+				Timeout:   timeout.Connect,
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}
+
+	// Store in cache (LoadOrStore ensures only one transport per key)
+	actual, _ := transportCache.LoadOrStore(key, transport)
+	return actual.(*http.Transport)
+}
+
+// CloseAllTransports closes all cached transports (call on shutdown)
+func CloseAllTransports() {
+	transportCache.Range(func(key, value interface{}) bool {
+		if transport, ok := value.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+		return true
+	})
 }
 
 // writeHTTPError writes an HTTP error response to the connection
@@ -119,15 +184,7 @@ func shouldCloseConnection(req *http.Request, resp *http.Response) bool {
 func HandleHTTPConnection(conn net.Conn, bindListen bool) {
 	defer conn.Close()
 
-	// Get local and remote TCP addresses with type assertion checks
-	tcpLocalAddr, ok := conn.LocalAddr().(*net.TCPAddr)
-	if !ok {
-		logger.Error("Connection is not TCP")
-		return
-	}
-	localAddr := &net.TCPAddr{IP: tcpLocalAddr.IP}
-
-	// Get the client's IP address
+	// Get the client's IP address early for rate limiting
 	clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
 	if !ok {
 		logger.Error("Connection is not TCP")
@@ -135,11 +192,30 @@ func HandleHTTPConnection(conn net.Conn, bindListen bool) {
 	}
 	clientIP := clientAddr.IP.String()
 
+	// Apply connection rate limiting
+	limiter := GetHTTPLimiter()
+	if !limiter.Acquire(clientIP) {
+		logger.Warn("Connection limit reached for IP %s", clientIP)
+		// Try to send 503 Service Unavailable before closing
+		writeHTTPError(conn, http.StatusServiceUnavailable, "Service Unavailable", nil)
+		return
+	}
+	defer limiter.Release(clientIP)
+
+	// Get local TCP addresses with type assertion checks
+	tcpLocalAddr, ok := conn.LocalAddr().(*net.TCPAddr)
+	if !ok {
+		logger.Error("Connection is not TCP")
+		return
+	}
+	localAddr := &net.TCPAddr{IP: tcpLocalAddr.IP}
+
 	// Get timeout configuration once at the beginning
 	timeout := config.GetTimeout()
 
-	// Create buffered reader with increased buffer size for persistent connection support
-	reader := bufio.NewReaderSize(conn, constants.BufferSizeSmall)
+	// Get buffered reader from pool for persistent connection support
+	reader := getReader(conn)
+	defer putReader(reader)
 
 	// Connection-level authentication state for Keep-Alive optimization
 	// Track request count to periodically re-verify credentials for security
@@ -358,32 +434,22 @@ func handleHTTPRequest(conn net.Conn, req *http.Request, reader *bufio.Reader, b
 	req.RequestURI = ""
 
 	// Use HTTP client with connection pooling
+	var transport *http.Transport
+	if bindListen {
+		// Use cached transport for this local address to enable connection pooling
+		transport = getTransportForLocalAddr(localAddr, timeout)
+	} else {
+		// Use default shared transport
+		transport = getDefaultTransport()
+	}
+
 	client := &http.Client{
-		Transport: getDefaultTransport(),
+		Transport: transport,
 		Timeout:   timeout.IdleRead + timeout.IdleWrite,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			// Don't follow redirects automatically
 			return http.ErrUseLastResponse
 		},
-	}
-
-	// If bind-listen mode, create custom transport with local address
-	if bindListen {
-		customTransport := &http.Transport{
-			MaxIdleConns:        constants.HTTPPoolMaxIdleConns,
-			MaxIdleConnsPerHost: constants.HTTPPoolMaxIdleConnsPerHost,
-			IdleConnTimeout:     constants.HTTPPoolIdleConnTimeout,
-			DisableKeepAlives:   false,
-			DisableCompression:  false,
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				dialer := &net.Dialer{
-					LocalAddr: localAddr,
-					Timeout:   timeout.Connect,
-				}
-				return dialer.DialContext(ctx, network, addr)
-			},
-		}
-		client.Transport = customTransport
 	}
 
 	// Make the request
