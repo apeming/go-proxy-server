@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"go-proxy-server/internal/logger"
@@ -68,7 +67,7 @@ func AddUser(db *gorm.DB, ip, username, password string) error {
 		return err
 	}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hashedPassword, err := HashPassword([]byte(password))
 	if err != nil {
 		return err
 	}

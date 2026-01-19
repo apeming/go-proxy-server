@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/getlantern/systray v1.2.2
 	github.com/glebarez/sqlite v1.10.0
-	golang.org/x/crypto v0.11.0
+	github.com/go-ole/go-ole v1.3.0
 	gorm.io/gorm v1.25.5
 )
 
@@ -18,7 +18,6 @@ require (
 	github.com/getlantern/hidden v0.0.0-20190325191715-f02dbb02be55 // indirect
 	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f // indirect
 	github.com/glebarez/go-sqlite v1.21.2 // indirect
-	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
