@@ -67,17 +67,16 @@ func Start(db *gorm.DB, webPort int) error {
 		systray.Run(onReady(webPort), onExit)
 	}()
 
-	// Wait for tray to be ready with timeout
-	timeout := time.After(5 * time.Second)
+	// Wait for tray to be ready with timeout (increased to 30 seconds for first-time initialization)
+	timeout := time.After(30 * time.Second)
 	select {
 	case <-trayReady:
 		logger.Info("System tray initialized successfully")
 		// Keep main goroutine alive until shutdown is complete
 		<-shutdownComplete
-		logger.Info("Shutdown complete, exiting main goroutine")
 		return nil
 	case <-timeout:
-		logger.Error("System tray initialization timeout after 5 seconds")
+		logger.Error("System tray initialization timeout after 30 seconds")
 		return fmt.Errorf("tray initialization timeout")
 	}
 }
@@ -86,20 +85,13 @@ func onReady(webPort int) func() {
 	return func() {
 		logger.Info("Initializing system tray...")
 
-		// Set icon (using a simple icon data)
 		systray.SetIcon(getIcon())
 		systray.SetTitle("Go Proxy Server")
 		systray.SetTooltip("Go Proxy Server - 代理服务器管理")
 
-		logger.Info("Tray icon initialized")
-
-		// Load initial credentials and whitelist
 		auth.LoadCredentialsFromDB(globalDB)
 		auth.LoadWhitelistFromDB(globalDB)
 
-		logger.Info("Starting web server on port %d...", webPort)
-
-		// Start web server in background
 		globalWebManager = web.NewManager(globalDB, webPort)
 
 		// Auto-start proxies based on saved configuration
@@ -118,25 +110,22 @@ func onReady(webPort int) func() {
 		}
 
 		go func() {
-			logger.Info("Web management interface starting on port %d (0 = random)", webPort)
 			if err := globalWebManager.StartServer(); err != nil {
 				logger.Error("Web server failed: %v", err)
 			}
 		}()
 
-			// Wait for server to bind to port (StartServer sets actualPort before blocking on http.Serve)
-			time.Sleep(200 * time.Millisecond)
-			actualWebPort = globalWebManager.GetActualPort()
-			logger.Info("Web management interface started on http://localhost:%d", actualWebPort)
-
-		logger.Info("Adding tray menu items...")
+		// Wait for server to bind to port (StartServer sets actualPort before blocking on http.Serve)
+		time.Sleep(200 * time.Millisecond)
+		actualWebPort = globalWebManager.GetActualPort()
+		logger.Info("Web management interface started on http://localhost:%d", actualWebPort)
 
 		// Add menu items
 		mOpen := systray.AddMenuItem("打开管理界面", "在浏览器中打开管理界面")
 		systray.AddSeparator()
 		mQuit := systray.AddMenuItem("退出", "退出程序")
 
-		logger.Info("System tray application ready!")
+		logger.Info("System tray application ready")
 
 		// Signal that tray is ready
 		select {
@@ -149,7 +138,6 @@ func onReady(webPort int) func() {
 			for {
 				select {
 				case <-mOpen.ClickedCh:
-					logger.Info("Opening browser...")
 					// Use actual port
 					port := actualWebPort
 					if port == 0 {
@@ -209,8 +197,6 @@ func openBrowser(url string) {
 	}
 	if err != nil {
 		logger.Error("Failed to open browser: %v", err)
-	} else {
-		logger.Info("Browser opened successfully")
 	}
 }
 

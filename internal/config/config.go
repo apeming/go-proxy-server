@@ -131,10 +131,9 @@ func SaveTimeoutToDB(db *gorm.DB, timeout TimeoutConfig) error {
 		return err
 	}
 
-	// Update in-memory configuration only after successful database save
-	timeoutMu.Lock()
-	currentTimeout = timeout
-	timeoutMu.Unlock()
+	// Note: Do NOT update in-memory configuration here
+	// The caller (LoadTimeoutFromDB) already holds the lock and will update it
+	// This prevents deadlock when called from LoadTimeoutFromDB
 
 	return nil
 }
