@@ -22,6 +22,7 @@ import (
 	applogger "go-proxy-server/internal/logger"
 	"go-proxy-server/internal/models"
 	"go-proxy-server/internal/proxy"
+	"go-proxy-server/internal/singleinstance"
 	"go-proxy-server/internal/tray"
 	"go-proxy-server/internal/web"
 )
@@ -120,6 +121,31 @@ func runProxyServer(proxyType string, port int, bindListen bool, db *gorm.DB) er
 func main() {
 	// Initialize logger for stdout output
 	applogger.InitStdout()
+
+	// Check for single instance (only on Windows, and only in GUI mode without arguments)
+	if runtime.GOOS == "windows" && len(os.Args) == 1 {
+		isOnly, err := singleinstance.Check("Global\\GoProxyServerInstance")
+		if err != nil {
+			applogger.Error("Failed to check single instance: %v", err)
+			fmt.Printf("警告: 无法检查是否已有实例运行: %v\n", err)
+		} else if !isOnly {
+			// Another instance is already running
+			applogger.Info("Another instance is already running, exiting")
+			fmt.Println("======================================")
+			fmt.Println("检测到程序已在运行!")
+			fmt.Println("Another instance is already running!")
+			fmt.Println("======================================")
+			fmt.Println()
+			fmt.Println("请检查系统托盘（任务栏右下角）是否已有图标。")
+			fmt.Println("Please check the system tray (bottom-right of taskbar) for the application icon.")
+			fmt.Println()
+			fmt.Println("按任意键退出... Press any key to exit...")
+			fmt.Scanln()
+			return
+		}
+		defer singleinstance.Release()
+		applogger.Info("Single instance check passed")
+	}
 
 	err := config.Load()
 	if err != nil {
@@ -237,9 +263,61 @@ func main() {
 		// On Windows, start system tray application
 		// On other platforms, start web server directly
 		if runtime.GOOS == "windows" {
-			applogger.Info("Windows detected - starting system tray application")
-			// Start Windows system tray application
-			tray.Start(db, 0) // Use random port
+			applogger.Info("Windows detected - attempting to start system tray application")
+
+			// Try to start system tray with panic recovery
+			trayStarted := false
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						applogger.Error("System tray panic recovered in main: %v", r)
+						trayStarted = false
+					}
+				}()
+
+				// Attempt to start tray (this blocks if successful)
+				if err := tray.Start(db, 0); err != nil {
+					applogger.Error("System tray failed to start: %v", err)
+					trayStarted = false
+				} else {
+					trayStarted = true
+				}
+			}()
+
+			// If tray failed to start, fallback to web mode
+			if !trayStarted {
+				applogger.Info("Falling back to web server mode")
+				fmt.Println("系统托盘启动失败，切换到Web服务器模式...")
+				fmt.Println("System tray failed to start, falling back to web server mode...")
+
+				// Load initial credentials and whitelist
+				auth.LoadCredentialsFromDB(db)
+				auth.LoadWhitelistFromDB(db)
+
+				// Create and start web manager with random port
+				webManager := web.NewManager(db, 0)
+
+				// Auto-start proxies based on saved configuration
+				if socksConfig, err := config.LoadProxyConfig(db, "socks5"); err == nil && socksConfig != nil && socksConfig.AutoStart {
+					applogger.Info("Auto-starting SOCKS5 proxy on port %d", socksConfig.Port)
+					if err := webManager.AutoStartProxy("socks5", socksConfig.Port, socksConfig.BindListen); err != nil {
+						applogger.Error("Failed to auto-start SOCKS5 proxy: %v", err)
+					}
+				}
+
+				if httpConfig, err := config.LoadProxyConfig(db, "http"); err == nil && httpConfig != nil && httpConfig.AutoStart {
+					applogger.Info("Auto-starting HTTP proxy on port %d", httpConfig.Port)
+					if err := webManager.AutoStartProxy("http", httpConfig.Port, httpConfig.BindListen); err != nil {
+						applogger.Error("Failed to auto-start HTTP proxy: %v", err)
+					}
+				}
+
+				fmt.Println("Starting web management interface on random port...")
+				if err := webManager.StartServer(); err != nil {
+					applogger.Error("Web server failed: %v", err)
+					return
+				}
+			}
 		} else {
 			applogger.Info("Non-Windows platform - starting web server directly")
 			// Load initial credentials and whitelist

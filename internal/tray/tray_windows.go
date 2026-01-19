@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/getlantern/systray"
 	"gorm.io/gorm"
@@ -25,12 +27,58 @@ var iconData []byte
 var globalDB *gorm.DB
 var globalWebManager *web.Manager
 var actualWebPort int // Store actual port after binding
+var trayReady = make(chan bool, 1) // Signal when tray is ready
 
-// Start starts the system tray application
-func Start(db *gorm.DB, webPort int) {
+var (
+	user32           = syscall.NewLazyDLL("user32.dll")
+	messageBoxW      = user32.NewProc("MessageBoxW")
+	MB_OK            = 0x00000000
+	MB_ICONERROR     = 0x00000010
+	MB_ICONWARNING   = 0x00000030
+	MB_ICONINFO      = 0x00000040
+)
+
+// showMessageBox displays a Windows message box
+func showMessageBox(title, message string, icon int) {
+	titlePtr, _ := syscall.UTF16PtrFromString(title)
+	messagePtr, _ := syscall.UTF16PtrFromString(message)
+	messageBoxW.Call(0, uintptr(unsafe.Pointer(messagePtr)), uintptr(unsafe.Pointer(titlePtr)), uintptr(MB_OK|icon))
+}
+
+// Start starts the system tray application with timeout detection
+// Returns error if tray initialization fails or times out
+func Start(db *gorm.DB, webPort int) error {
 	globalDB = db
 	logger.Info("Starting system tray application...")
-	systray.Run(onReady(webPort), onExit)
+
+	// Add panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("System tray panic: %v", r)
+			errMsg := fmt.Sprintf("系统托盘初始化失败: %v\n\n程序将以Web模式启动。", r)
+			showMessageBox("Go Proxy Server - 启动错误", errMsg, MB_ICONWARNING)
+		}
+	}()
+
+	// Start systray in goroutine to allow timeout detection
+	go func() {
+		// systray.Run() blocks until systray.Quit() is called
+		systray.Run(onReady(webPort), onExit)
+	}()
+
+	// Wait for tray to be ready with timeout
+	timeout := time.After(5 * time.Second)
+	select {
+	case <-trayReady:
+		logger.Info("System tray initialized successfully")
+		// Keep main goroutine alive (systray is running in another goroutine)
+		select {} // Block forever
+	case <-timeout:
+		logger.Error("System tray initialization timeout after 5 seconds")
+		return fmt.Errorf("tray initialization timeout")
+	}
+
+	return nil
 }
 
 func onReady(webPort int) func() {
@@ -88,6 +136,12 @@ func onReady(webPort int) func() {
 		mQuit := systray.AddMenuItem("退出", "退出程序")
 
 		logger.Info("System tray application ready!")
+
+		// Signal that tray is ready
+		select {
+		case trayReady <- true:
+		default:
+		}
 
 		// Handle menu clicks
 		go func() {
