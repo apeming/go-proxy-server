@@ -153,9 +153,6 @@ When run without arguments:
 
 **internal/auth/auth.go** - Core authentication logic
 - `VerifyCredentials()`: Validates username/password with timing attack protection
-- `VerifyCredentialsWithCache()`: Cached credential verification to reduce bcrypt overhead
-- `CheckAuthCache()`, `SetAuthCache()`: Authentication result caching (5-minute TTL)
-- `cleanupAuthCache()`: Periodic cleanup of expired auth cache entries
 - Uses constant-time comparison to prevent timing attacks
 - Shared by both SOCKS5 and HTTP proxies
 

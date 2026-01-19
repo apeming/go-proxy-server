@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"time"
 
 	"github.com/getlantern/systray"
 	"gorm.io/gorm"
@@ -23,6 +24,7 @@ var iconData []byte
 
 var globalDB *gorm.DB
 var globalWebManager *web.Manager
+var actualWebPort int // Store actual port after binding
 
 // Start starts the system tray application
 func Start(db *gorm.DB, webPort int) {
@@ -67,12 +69,16 @@ func onReady(webPort int) func() {
 		}
 
 		go func() {
-			logger.Info("Web management interface starting on port %d", webPort)
-			logger.Info("Open your browser and visit: http://localhost:%d", webPort)
+			logger.Info("Web management interface starting on port %d (0 = random)", webPort)
 			if err := globalWebManager.StartServer(); err != nil {
 				logger.Error("Web server failed: %v", err)
 			}
 		}()
+
+			// Wait for server to bind to port (StartServer sets actualPort before blocking on http.Serve)
+			time.Sleep(200 * time.Millisecond)
+			actualWebPort = globalWebManager.GetActualPort()
+			logger.Info("Web management interface started on http://localhost:%d", actualWebPort)
 
 		logger.Info("Adding tray menu items...")
 
@@ -89,7 +95,12 @@ func onReady(webPort int) func() {
 				select {
 				case <-mOpen.ClickedCh:
 					logger.Info("Opening browser...")
-					openBrowser(fmt.Sprintf("http://localhost:%d", webPort))
+					// Use actual port
+					port := actualWebPort
+					if port == 0 {
+						port = webPort
+					}
+					openBrowser(fmt.Sprintf("http://localhost:%d", port))
 				case <-mQuit.ClickedCh:
 					logger.Info("Quit requested by user")
 					systray.Quit()

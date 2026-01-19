@@ -15,3 +15,14 @@ export interface TimeoutConfig {
   idleRead: number;
   idleWrite: number;
 }
+
+export interface LimiterConfig {
+  maxConcurrentConnections: number;
+  maxConcurrentConnectionsPerIP: number;
+}
+
+export interface UnifiedConfig {
+  timeout: TimeoutConfig;
+  limiter: LimiterConfig;
+  system: SystemSettings;
+}

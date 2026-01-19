@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -22,18 +23,28 @@ func (wm *Manager) StartServer() error {
 	http.HandleFunc("/api/proxy/start", wm.handleProxyStart)
 	http.HandleFunc("/api/proxy/stop", wm.handleProxyStop)
 	http.HandleFunc("/api/proxy/config", wm.handleProxyConfig)
-	http.HandleFunc("/api/system/settings", wm.handleSystemSettings)
-	http.HandleFunc("/api/timeout", wm.handleTimeout)
+	http.HandleFunc("/api/config", wm.handleConfig)
 
 	// Static files and SPA fallback (must be last)
 	http.HandleFunc("/", wm.handleIndex)
 
-	// Only listen on localhost for security
+	// Create listener
 	addr := fmt.Sprintf("localhost:%d", wm.webPort)
-	fmt.Printf("Web management interface started at http://%s\n", addr)
-	fmt.Printf("Open your browser and visit: http://%s\n", addr)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to start web server: %w", err)
+	}
 
-	return http.ListenAndServe(addr, nil)
+	// Get actual port (useful when port is 0 for random assignment)
+	actualPort := listener.Addr().(*net.TCPAddr).Port
+	wm.SetActualPort(actualPort)
+
+	// Print URL with actual port
+	fmt.Printf("Web management interface started at http://localhost:%d\n", actualPort)
+	fmt.Printf("Open your browser and visit: http://localhost:%d\n", actualPort)
+
+	// Start serving
+	return http.Serve(listener, nil)
 }
 
 // handleIndex serves the static files and SPA fallback
@@ -340,69 +351,9 @@ func (wm *Manager) handleProxyConfig(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
 
-// handleSystemSettings handles system settings (GET, POST)
-func (wm *Manager) handleSystemSettings(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	switch r.Method {
-	case http.MethodGet:
-		// Get current settings
-		autostartValue, _ := config.GetSystemConfig(wm.db, config.KeyAutoStart)
-		autostartEnabled := autostartValue == "true"
-
-		// Check actual registry status (Windows only)
-		registryEnabled, _ := autostart.IsEnabled()
-
-		settings := map[string]interface{}{
-			"autostartEnabled":   autostartEnabled,
-			"registryEnabled":    registryEnabled,
-			"autostartSupported": true, // Will be false on non-Windows
-		}
-
-		json.NewEncoder(w).Encode(settings)
-
-	case http.MethodPost:
-		// Update settings
-		var req struct {
-			AutostartEnabled bool `json:"autostartEnabled"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		// Update registry
-		if req.AutostartEnabled {
-			if err := autostart.Enable(); err != nil {
-				http.Error(w, fmt.Sprintf("Failed to enable autostart: %v", err), http.StatusInternalServerError)
-				return
-			}
-		} else {
-			if err := autostart.Disable(); err != nil {
-				http.Error(w, fmt.Sprintf("Failed to disable autostart: %v", err), http.StatusInternalServerError)
-				return
-			}
-		}
-
-		// Update database
-		value := "false"
-		if req.AutostartEnabled {
-			value = "true"
-		}
-		if err := config.SetSystemConfig(wm.db, config.KeyAutoStart, value); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		json.NewEncoder(w).Encode(map[string]string{"status": "success"})
-
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// handleTimeout handles timeout configuration (GET, POST)
-func (wm *Manager) handleTimeout(w http.ResponseWriter, r *http.Request) {
+// handleConfig handles unified configuration (GET, POST)
+// Includes: timeout, connection limiter, and system settings
+func (wm *Manager) handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
@@ -410,20 +361,50 @@ func (wm *Manager) handleTimeout(w http.ResponseWriter, r *http.Request) {
 		// Get current timeout configuration
 		timeout := config.GetTimeout()
 
+		// Get current limiter configuration
+		limiterConfig := config.GetLimiterConfig()
+
+		// Get autostart settings
+		autostartValue, _ := config.GetSystemConfig(wm.db, config.KeyAutoStart)
+		autostartEnabled := autostartValue == "true"
+
+		// Check actual registry status (Windows only)
+		registryEnabled, _ := autostart.IsEnabled()
+
 		response := map[string]interface{}{
-			"connect":   int(timeout.Connect.Seconds()),
-			"idleRead":  int(timeout.IdleRead.Seconds()),
-			"idleWrite": int(timeout.IdleWrite.Seconds()),
+			"timeout": map[string]interface{}{
+				"connect":   int(timeout.Connect.Seconds()),
+				"idleRead":  int(timeout.IdleRead.Seconds()),
+				"idleWrite": int(timeout.IdleWrite.Seconds()),
+			},
+			"limiter": map[string]interface{}{
+				"maxConcurrentConnections":      limiterConfig.MaxConcurrentConnections,
+				"maxConcurrentConnectionsPerIP": limiterConfig.MaxConcurrentConnectionsPerIP,
+			},
+			"system": map[string]interface{}{
+				"autostartEnabled":   autostartEnabled,
+				"registryEnabled":    registryEnabled,
+				"autostartSupported": true,
+			},
 		}
 
 		json.NewEncoder(w).Encode(response)
 
 	case http.MethodPost:
-		// Update timeout configuration
+		// Update configuration
 		var req struct {
-			Connect   int `json:"connect"`   // in seconds
-			IdleRead  int `json:"idleRead"`  // in seconds
-			IdleWrite int `json:"idleWrite"` // in seconds
+			Timeout *struct {
+				Connect   int `json:"connect"`
+				IdleRead  int `json:"idleRead"`
+				IdleWrite int `json:"idleWrite"`
+			} `json:"timeout"`
+			Limiter *struct {
+				MaxConcurrentConnections      int32 `json:"maxConcurrentConnections"`
+				MaxConcurrentConnectionsPerIP int32 `json:"maxConcurrentConnectionsPerIP"`
+			} `json:"limiter"`
+			System *struct {
+				AutostartEnabled bool `json:"autostartEnabled"`
+			} `json:"system"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -431,31 +412,79 @@ func (wm *Manager) handleTimeout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Validate timeout values
-		if req.Connect <= 0 || req.Connect > 300 {
-			http.Error(w, "Connect timeout must be between 1 and 300 seconds", http.StatusBadRequest)
-			return
-		}
-		if req.IdleRead <= 0 || req.IdleRead > 3600 {
-			http.Error(w, "Idle read timeout must be between 1 and 3600 seconds", http.StatusBadRequest)
-			return
-		}
-		if req.IdleWrite <= 0 || req.IdleWrite > 3600 {
-			http.Error(w, "Idle write timeout must be between 1 and 3600 seconds", http.StatusBadRequest)
-			return
+		// Update timeout configuration if provided
+		if req.Timeout != nil {
+			// Validate timeout values
+			if req.Timeout.Connect <= 0 || req.Timeout.Connect > 300 {
+				http.Error(w, "Connect timeout must be between 1 and 300 seconds", http.StatusBadRequest)
+				return
+			}
+			if req.Timeout.IdleRead <= 0 || req.Timeout.IdleRead > 3600 {
+				http.Error(w, "Idle read timeout must be between 1 and 3600 seconds", http.StatusBadRequest)
+				return
+			}
+			if req.Timeout.IdleWrite <= 0 || req.Timeout.IdleWrite > 3600 {
+				http.Error(w, "Idle write timeout must be between 1 and 3600 seconds", http.StatusBadRequest)
+				return
+			}
+
+			// Create new timeout configuration
+			newTimeout := config.TimeoutConfig{
+				Connect:   time.Duration(req.Timeout.Connect) * time.Second,
+				IdleRead:  time.Duration(req.Timeout.IdleRead) * time.Second,
+				IdleWrite: time.Duration(req.Timeout.IdleWrite) * time.Second,
+			}
+
+			// Save to database
+			if err := config.SaveTimeoutToDB(wm.db, newTimeout); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to save timeout configuration: %v", err), http.StatusInternalServerError)
+				return
+			}
 		}
 
-		// Create new timeout configuration
-		newTimeout := config.TimeoutConfig{
-			Connect:   time.Duration(req.Connect) * time.Second,
-			IdleRead:  time.Duration(req.IdleRead) * time.Second,
-			IdleWrite: time.Duration(req.IdleWrite) * time.Second,
+		// Update limiter configuration if provided
+		if req.Limiter != nil {
+			// Validate limiter values
+			if req.Limiter.MaxConcurrentConnections <= 0 || req.Limiter.MaxConcurrentConnections > 1000000 {
+				http.Error(w, "Max concurrent connections must be between 1 and 1000000", http.StatusBadRequest)
+				return
+			}
+			if req.Limiter.MaxConcurrentConnectionsPerIP <= 0 || req.Limiter.MaxConcurrentConnectionsPerIP > 100000 {
+				http.Error(w, "Max concurrent connections per IP must be between 1 and 100000", http.StatusBadRequest)
+				return
+			}
+
+			// Update limiter configuration in database and memory
+			if err := config.UpdateLimiterConfig(wm.db, req.Limiter.MaxConcurrentConnections, req.Limiter.MaxConcurrentConnectionsPerIP); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to update limiter configuration: %v", err), http.StatusInternalServerError)
+				return
+			}
 		}
 
-		// Save to database
-		if err := config.SaveTimeoutToDB(wm.db, newTimeout); err != nil {
-			http.Error(w, fmt.Sprintf("Failed to save timeout configuration: %v", err), http.StatusInternalServerError)
-			return
+		// Update system settings if provided
+		if req.System != nil {
+			// Update registry
+			if req.System.AutostartEnabled {
+				if err := autostart.Enable(); err != nil {
+					http.Error(w, fmt.Sprintf("Failed to enable autostart: %v", err), http.StatusInternalServerError)
+					return
+				}
+			} else {
+				if err := autostart.Disable(); err != nil {
+					http.Error(w, fmt.Sprintf("Failed to disable autostart: %v", err), http.StatusInternalServerError)
+					return
+				}
+			}
+
+			// Update database
+			value := "false"
+			if req.System.AutostartEnabled {
+				value = "true"
+			}
+			if err := config.SetSystemConfig(wm.db, config.KeyAutoStart, value); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		json.NewEncoder(w).Encode(map[string]string{"status": "success"})

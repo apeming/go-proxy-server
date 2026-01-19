@@ -4,7 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"go-proxy-server/internal/constants"
+	"go-proxy-server/internal/config"
 )
 
 // ConnectionLimiter limits the number of concurrent connections globally and per IP
@@ -19,35 +19,52 @@ type ConnectionLimiter struct {
 
 // NewConnectionLimiter creates a new connection limiter
 func NewConnectionLimiter() *ConnectionLimiter {
+	cfg := config.GetLimiterConfig()
+	// If MaxConcurrentConnections is 0 (unlimited), use max int32 for channel size
+	semSize := cfg.MaxConcurrentConnections
+	if semSize == 0 {
+		semSize = 2147483647 // int32 max value for unlimited
+	}
 	return &ConnectionLimiter{
-		globalSem: make(chan struct{}, constants.MaxConcurrentConnections),
+		globalSem: make(chan struct{}, semSize),
 	}
 }
 
 // Acquire attempts to acquire a connection slot for the given IP
 // Returns true if successful, false if the limit is reached
 func (cl *ConnectionLimiter) Acquire(clientIP string) bool {
-	// Try to acquire global semaphore (non-blocking)
-	select {
-	case cl.globalSem <- struct{}{}:
-		// Global limit not reached, now check per-IP limit
-	default:
-		// Global limit reached
-		return false
+	// Get current limit from configuration
+	cfg := config.GetLimiterConfig()
+
+	// Check global limit (skip if 0 = unlimited)
+	if cfg.MaxConcurrentConnections > 0 {
+		// Try to acquire global semaphore (non-blocking)
+		select {
+		case cl.globalSem <- struct{}{}:
+			// Global limit not reached, continue to per-IP check
+		default:
+			// Global limit reached
+			return false
+		}
 	}
 
-	// Check and increment per-IP counter
-	counterInterface, _ := cl.perIPCounters.LoadOrStore(clientIP, new(int32))
-	counter := counterInterface.(*int32)
+	// Check per-IP limit (skip if 0 = unlimited)
+	if cfg.MaxConcurrentConnectionsPerIP > 0 {
+		// Check and increment per-IP counter
+		counterInterface, _ := cl.perIPCounters.LoadOrStore(clientIP, new(int32))
+		counter := counterInterface.(*int32)
 
-	// Atomically increment and check if limit exceeded
-	newCount := atomic.AddInt32(counter, 1)
-	if newCount > constants.MaxConcurrentConnectionsPerIP {
-		// Per-IP limit exceeded, rollback
-		atomic.AddInt32(counter, -1)
-		// Release global semaphore
-		<-cl.globalSem
-		return false
+		// Atomically increment and check if limit exceeded
+		newCount := atomic.AddInt32(counter, 1)
+		if newCount > cfg.MaxConcurrentConnectionsPerIP {
+			// Per-IP limit exceeded, rollback
+			atomic.AddInt32(counter, -1)
+			// Release global semaphore if it was acquired
+			if cfg.MaxConcurrentConnections > 0 {
+				<-cl.globalSem
+			}
+			return false
+		}
 	}
 
 	// Successfully acquired, increment total counter
@@ -57,35 +74,42 @@ func (cl *ConnectionLimiter) Acquire(clientIP string) bool {
 
 // Release releases a connection slot for the given IP
 func (cl *ConnectionLimiter) Release(clientIP string) {
-	// Decrement per-IP counter with protection against negative values
-	if counterInterface, ok := cl.perIPCounters.Load(clientIP); ok {
-		counter := counterInterface.(*int32)
+	// Get current configuration to check if limits are enabled
+	cfg := config.GetLimiterConfig()
 
-		// Use CAS loop to ensure we don't go below zero
-		for {
-			oldCount := atomic.LoadInt32(counter)
-			if oldCount <= 0 {
-				// Already at zero or negative (shouldn't happen), don't decrement
-				break
-			}
-			newCount := oldCount - 1
-			if atomic.CompareAndSwapInt32(counter, oldCount, newCount) {
-				// Successfully decremented
-				// Clean up counter if it reaches zero to prevent memory leak
-				if newCount == 0 {
-					cl.perIPCounters.Delete(clientIP)
+	// Decrement per-IP counter (only if per-IP limit is enabled)
+	if cfg.MaxConcurrentConnectionsPerIP > 0 {
+		if counterInterface, ok := cl.perIPCounters.Load(clientIP); ok {
+			counter := counterInterface.(*int32)
+
+			// Use CAS loop to ensure we don't go below zero
+			for {
+				oldCount := atomic.LoadInt32(counter)
+				if oldCount <= 0 {
+					// Already at zero or negative (shouldn't happen), don't decrement
+					break
 				}
-				break
+				newCount := oldCount - 1
+				if atomic.CompareAndSwapInt32(counter, oldCount, newCount) {
+					// Successfully decremented
+					// Clean up counter if it reaches zero to prevent memory leak
+					if newCount == 0 {
+						cl.perIPCounters.Delete(clientIP)
+					}
+					break
+				}
+				// CAS failed, retry
 			}
-			// CAS failed, retry
 		}
 	}
 
-	// Release global semaphore
-	select {
-	case <-cl.globalSem:
-	default:
-		// Should not happen, but handle gracefully
+	// Release global semaphore (only if global limit is enabled)
+	if cfg.MaxConcurrentConnections > 0 {
+		select {
+		case <-cl.globalSem:
+		default:
+			// Should not happen, but handle gracefully
+		}
 	}
 
 	// Decrement total counter (use Add with negative value, which is atomic)
@@ -124,4 +148,11 @@ func GetSOCKS5Limiter() *ConnectionLimiter {
 // GetHTTPLimiter returns the global HTTP connection limiter
 func GetHTTPLimiter() *ConnectionLimiter {
 	return httpLimiter
+}
+
+// RecreateLimiters recreates the global limiters with new configuration
+// This should be called when the connection limit configuration is updated
+func RecreateLimiters() {
+	socks5Limiter = NewConnectionLimiter()
+	httpLimiter = NewConnectionLimiter()
 }

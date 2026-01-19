@@ -350,14 +350,8 @@ func readAuthenticationRequest(conn net.Conn) error {
 		return err
 	}
 
-	// Get client IP for caching
-	clientIP := ""
-	if clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
-		clientIP = clientAddr.IP.String()
-	}
-
-	// Use cached authentication if available
-	return auth.VerifyCredentialsWithCache(clientIP, username, passwordBytes)
+	// Verify credentials without caching (security fix)
+	return auth.VerifyCredentials(username, passwordBytes)
 }
 
 func readSocks5Request(conn net.Conn) (string, error) {

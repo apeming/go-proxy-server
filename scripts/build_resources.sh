@@ -18,7 +18,7 @@ GOPATH_BIN="$(go env GOPATH)/bin"
 
 echo "Building Windows resources..."
 
-# Method 1: Try goversioninfo first (recommended)
+# Method 1: Try goversioninfo first (recommended for icon support)
 if command -v goversioninfo &> /dev/null || [ -f "$GOPATH_BIN/goversioninfo" ]; then
     echo "Using goversioninfo method (recommended)..."
 
@@ -42,6 +42,43 @@ if command -v goversioninfo &> /dev/null || [ -f "$GOPATH_BIN/goversioninfo" ]; 
     else
         echo "✗ Failed to create resource file"
         exit 1
+    fi
+else
+    # goversioninfo not found, try to install it automatically
+    echo ""
+    echo "goversioninfo not found. Installing automatically (recommended for icon support)..."
+    echo ""
+
+    if go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest; then
+        echo "✓ goversioninfo installed successfully"
+        echo ""
+
+        # Verify installation
+        if [ -f "$GOPATH_BIN/goversioninfo" ]; then
+            echo "Using goversioninfo method (recommended)..."
+            GOVERSIONINFO="$GOPATH_BIN/goversioninfo"
+
+            echo "Generating resources with goversioninfo..."
+            cd "$PROJECT_ROOT"
+            "$GOVERSIONINFO" -64 -o cmd/server/resource_windows_amd64.syso assets/versioninfo.json
+
+            SYSO_FILE="$PROJECT_ROOT/cmd/server/resource_windows_amd64.syso"
+            if [ -f "$SYSO_FILE" ]; then
+                echo "✓ Resource file created: $SYSO_FILE"
+                ls -lh "$SYSO_FILE"
+                echo "Done! The .syso file will be automatically included in Windows builds."
+                exit 0
+            else
+                echo "✗ Failed to create resource file"
+                exit 1
+            fi
+        else
+            echo "Warning: goversioninfo installation succeeded but not found in GOPATH"
+            echo "Falling back to alternative methods..."
+        fi
+    else
+        echo "Warning: Failed to install goversioninfo automatically"
+        echo "Falling back to alternative methods..."
     fi
 fi
 
@@ -75,16 +112,40 @@ else
     # Check if go-winres is installed
     if ! command -v go-winres &> /dev/null && [ ! -f "$GOPATH_BIN/go-winres" ]; then
         echo ""
-        echo "ERROR: go-winres not found."
+        echo "go-winres not found. Installing automatically..."
         echo ""
-        echo "Please install go-winres first:"
-        echo "  go install github.com/tc-hib/go-winres@latest"
-        echo ""
-        echo "Or install mingw-w64 to use windres instead:"
-        echo "  Ubuntu/Debian: sudo apt-get install mingw-w64"
-        echo "  macOS:         brew install mingw-w64"
-        echo ""
-        exit 1
+
+        # Try to install go-winres
+        if go install github.com/tc-hib/go-winres@latest; then
+            echo "✓ go-winres installed successfully"
+            echo ""
+
+            # Verify installation
+            if [ ! -f "$GOPATH_BIN/go-winres" ]; then
+                echo "ERROR: go-winres installation failed or not in PATH"
+                echo "Expected location: $GOPATH_BIN/go-winres"
+                echo ""
+                echo "Please install manually:"
+                echo "  go install github.com/tc-hib/go-winres@latest"
+                echo ""
+                echo "Or install mingw-w64 to use windres instead:"
+                echo "  Ubuntu/Debian: sudo apt-get install mingw-w64"
+                echo "  macOS:         brew install mingw-w64"
+                echo ""
+                exit 1
+            fi
+        else
+            echo "✗ Failed to install go-winres automatically"
+            echo ""
+            echo "Please install manually:"
+            echo "  go install github.com/tc-hib/go-winres@latest"
+            echo ""
+            echo "Or install mingw-w64 to use windres instead:"
+            echo "  Ubuntu/Debian: sudo apt-get install mingw-w64"
+            echo "  macOS:         brew install mingw-w64"
+            echo ""
+            exit 1
+        fi
     fi
 
     echo "windres not found, using go-winres (pure Go solution)..."
@@ -103,6 +164,13 @@ else
     # Create winres.json configuration
     cat > "$WINRES_DIR/winres.json" <<'EOF'
 {
+  "RT_GROUP_ICON": {
+    "#1": {
+      "0409": [
+        "icon.ico"
+      ]
+    }
+  },
   "RT_MANIFEST": {
     "#1": {
       "0409": "manifest.xml"
@@ -133,13 +201,26 @@ else
 }
 EOF
 
-    # Copy manifest to winres directory
+    # Copy manifest and icon to winres directory
     cp "$SCRIPT_DIR/manifest.xml" "$WINRES_DIR/"
+
+    # Use the simpler icon file first (better compatibility with go-winres)
+    if [ -f "$PROJECT_ROOT/assets/app.ico" ]; then
+        cp "$PROJECT_ROOT/assets/app.ico" "$WINRES_DIR/icon.ico"
+        echo "Using icon: assets/app.ico"
+    elif [ -f "$PROJECT_ROOT/internal/tray/icon.ico" ]; then
+        cp "$PROJECT_ROOT/internal/tray/icon.ico" "$WINRES_DIR/icon.ico"
+        echo "Using icon: internal/tray/icon.ico"
+    else
+        echo "Warning: No icon file found, skipping icon embedding"
+        # Remove icon configuration from winres.json if no icon available
+        sed -i '/"RT_GROUP_ICON":/,/},/d' "$WINRES_DIR/winres.json"
+    fi
 
     # Generate resources
     echo "Generating resources with go-winres..."
     cd "$PROJECT_ROOT"
-    "$GOWINRES" make --in "$WINRES_DIR" --out "$PROJECT_ROOT/cmd/server" --arch amd64
+    "$GOWINRES" make --in "$WINRES_DIR/winres.json" --out "cmd/server/rsrc" --arch amd64
 
     SYSO_FILE="$PROJECT_ROOT/cmd/server/rsrc_windows_amd64.syso"
     if [ -f "$SYSO_FILE" ]; then

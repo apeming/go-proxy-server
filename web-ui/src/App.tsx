@@ -6,7 +6,6 @@ import {
   UserOutlined,
   SafetyOutlined,
   SettingOutlined,
-  ClockCircleOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ApiOutlined,
@@ -15,8 +14,7 @@ import Dashboard from './components/Dashboard';
 import ProxyControl from './components/ProxyControl';
 import UserManagement from './components/UserManagement';
 import WhitelistManagement from './components/WhitelistManagement';
-import SystemSettings from './components/SystemSettings';
-import TimeoutConfig from './components/TimeoutConfig';
+import ConfigManagement from './components/ConfigManagement';
 import './App.css';
 
 const { Header, Sider, Content } = Layout;
@@ -53,14 +51,9 @@ const App: React.FC = () => {
       label: 'IP 白名单',
     },
     {
-      key: 'timeout',
-      icon: <ClockCircleOutlined />,
-      label: '超时配置',
-    },
-    {
-      key: 'system',
+      key: 'config',
       icon: <SettingOutlined />,
-      label: '系统设置',
+      label: '系统配置',
     },
   ];
 
@@ -74,10 +67,8 @@ const App: React.FC = () => {
         return <UserManagement />;
       case 'whitelist':
         return <WhitelistManagement />;
-      case 'timeout':
-        return <TimeoutConfig />;
-      case 'system':
-        return <SystemSettings />;
+      case 'config':
+        return <ConfigManagement />;
       default:
         return <Dashboard />;
     }

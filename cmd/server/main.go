@@ -172,6 +172,13 @@ func main() {
 	// Start timeout configuration reloader
 	config.StartTimeoutReloader(db)
 
+	// Initialize connection limiter configuration from database
+	if err := config.InitLimiterConfig(db); err != nil {
+		applogger.Error("Failed to initialize connection limiter configuration: %v", err)
+		return
+	}
+	applogger.Info("Connection limiter configuration initialized")
+
 	// Configure database connection pool
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -215,7 +222,7 @@ func main() {
 	bothBindListen := bothCmd.Bool("bind-listen", false, "use connect ip as output ip")
 
 	webCmd := flag.NewFlagSet("web", flag.ExitOnError)
-	webPort := webCmd.Int("port", 9090, "The port number for the web management interface")
+	webPort := webCmd.Int("port", 0, "The port number for the web management interface (0 for random port)")
 
 	flag.Parse()
 
@@ -232,15 +239,15 @@ func main() {
 		if runtime.GOOS == "windows" {
 			applogger.Info("Windows detected - starting system tray application")
 			// Start Windows system tray application
-			tray.Start(db, 9090)
+			tray.Start(db, 0) // Use random port
 		} else {
 			applogger.Info("Non-Windows platform - starting web server directly")
 			// Load initial credentials and whitelist
 			auth.LoadCredentialsFromDB(db)
 			auth.LoadWhitelistFromDB(db)
 
-			// Create and start web manager
-			webManager := web.NewManager(db, 9090)
+			// Create and start web manager with random port
+			webManager := web.NewManager(db, 0)
 
 			// Auto-start proxies based on saved configuration
 			if socksConfig, err := config.LoadProxyConfig(db, "socks5"); err == nil && socksConfig != nil && socksConfig.AutoStart {
@@ -257,8 +264,7 @@ func main() {
 				}
 			}
 
-			fmt.Println("Starting web management interface on port 9090...")
-			fmt.Println("Open your browser and visit: http://localhost:9090")
+			fmt.Println("Starting web management interface on random port...")
 			if err := webManager.StartServer(); err != nil {
 				applogger.Error("Web server failed: %v", err)
 				return

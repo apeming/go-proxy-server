@@ -32,6 +32,7 @@ type Manager struct {
 	httpServer  *ProxyServer
 	mu          sync.RWMutex
 	webPort     int
+	actualPort  int // Actual port being used (after binding)
 }
 
 // NewManager creates a new web manager
@@ -146,4 +147,18 @@ func (wm *Manager) AutoStartProxy(proxyType string, port int, bindListen bool) e
 	}
 
 	return wm.startProxy(server, port, bindListen)
+}
+
+// GetActualPort returns the actual port being used by the web server
+func (wm *Manager) GetActualPort() int {
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+	return wm.actualPort
+}
+
+// SetActualPort sets the actual port being used by the web server
+func (wm *Manager) SetActualPort(port int) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	wm.actualPort = port
 }
