@@ -120,6 +120,11 @@ func onReady(webPort int) func() {
 		actualWebPort = globalWebManager.GetActualPort()
 		logger.Info("Web management interface started on http://localhost:%d", actualWebPort)
 
+		// Update tooltip to show the actual port
+		tooltipText := fmt.Sprintf("Go Proxy Server\n管理界面: http://localhost:%d", actualWebPort)
+		systray.SetTooltip(tooltipText)
+		logger.Info("Tooltip updated with port information")
+
 		// Add menu items
 		mOpen := systray.AddMenuItem("打开管理界面", "在浏览器中打开管理界面")
 		systray.AddSeparator()

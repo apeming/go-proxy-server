@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ func (wm *Manager) StartServer() error {
 	mux.HandleFunc("/api/proxy/stop", wm.handleProxyStop)
 	mux.HandleFunc("/api/proxy/config", wm.handleProxyConfig)
 	mux.HandleFunc("/api/config", wm.handleConfig)
+	mux.HandleFunc("/api/shutdown", wm.handleShutdown)
 
 	// Static files and SPA fallback (must be last)
 	mux.HandleFunc("/", wm.handleIndex)
@@ -504,4 +506,38 @@ func (wm *Manager) handleConfig(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleShutdown handles application shutdown request
+func (wm *Manager) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Send success response first
+	json.NewEncoder(w).Encode(map[string]string{"status": "success", "message": "Application is shutting down..."})
+
+	// Flush the response to ensure client receives it
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	// Shutdown the application in a goroutine to allow the response to be sent
+	go func() {
+		// Give the response time to be sent
+		time.Sleep(500 * time.Millisecond)
+
+		// Gracefully shutdown the application
+		if err := wm.ShutdownApplication(); err != nil {
+			fmt.Printf("Error during shutdown: %v\n", err)
+		}
+
+		// Exit the application
+		fmt.Println("Application shutdown complete")
+		time.Sleep(100 * time.Millisecond)
+		os.Exit(0)
+	}()
 }

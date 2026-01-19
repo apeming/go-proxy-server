@@ -212,3 +212,19 @@ func (wm *Manager) Shutdown() error {
 
 	return nil
 }
+
+// ShutdownApplication gracefully shuts down the entire application
+func (wm *Manager) ShutdownApplication() error {
+	// Stop all proxy servers first
+	wm.StopAllProxies()
+
+	// Close all HTTP transport connections
+	proxy.CloseAllTransports()
+
+	// Shutdown the web server
+	if err := wm.Shutdown(); err != nil {
+		return err
+	}
+
+	return nil
+}
