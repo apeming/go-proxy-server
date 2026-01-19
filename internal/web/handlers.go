@@ -16,17 +16,20 @@ import (
 
 // StartServer starts the web management server
 func (wm *Manager) StartServer() error {
+	// Create a new ServeMux for this server
+	mux := http.NewServeMux()
+
 	// Setup API routes
-	http.HandleFunc("/api/status", wm.handleStatus)
-	http.HandleFunc("/api/users", wm.handleUsers)
-	http.HandleFunc("/api/whitelist", wm.handleWhitelist)
-	http.HandleFunc("/api/proxy/start", wm.handleProxyStart)
-	http.HandleFunc("/api/proxy/stop", wm.handleProxyStop)
-	http.HandleFunc("/api/proxy/config", wm.handleProxyConfig)
-	http.HandleFunc("/api/config", wm.handleConfig)
+	mux.HandleFunc("/api/status", wm.handleStatus)
+	mux.HandleFunc("/api/users", wm.handleUsers)
+	mux.HandleFunc("/api/whitelist", wm.handleWhitelist)
+	mux.HandleFunc("/api/proxy/start", wm.handleProxyStart)
+	mux.HandleFunc("/api/proxy/stop", wm.handleProxyStop)
+	mux.HandleFunc("/api/proxy/config", wm.handleProxyConfig)
+	mux.HandleFunc("/api/config", wm.handleConfig)
 
 	// Static files and SPA fallback (must be last)
-	http.HandleFunc("/", wm.handleIndex)
+	mux.HandleFunc("/", wm.handleIndex)
 
 	// Create listener
 	addr := fmt.Sprintf("localhost:%d", wm.webPort)
@@ -43,8 +46,17 @@ func (wm *Manager) StartServer() error {
 	fmt.Printf("Web management interface started at http://localhost:%d\n", actualPort)
 	fmt.Printf("Open your browser and visit: http://localhost:%d\n", actualPort)
 
-	// Start serving
-	return http.Serve(listener, nil)
+	// Create HTTP server with graceful shutdown support
+	wm.webHttpServer = &http.Server{
+		Handler: mux,
+	}
+
+	// Start serving (this will block until Shutdown is called)
+	if err := wm.webHttpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+
+	return nil
 }
 
 // handleIndex serves the static files and SPA fallback

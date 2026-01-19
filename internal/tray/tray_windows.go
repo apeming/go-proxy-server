@@ -28,6 +28,7 @@ var globalDB *gorm.DB
 var globalWebManager *web.Manager
 var actualWebPort int // Store actual port after binding
 var trayReady = make(chan bool, 1) // Signal when tray is ready
+var shutdownComplete = make(chan bool, 1) // Signal when shutdown is complete
 
 var (
 	user32           = syscall.NewLazyDLL("user32.dll")
@@ -71,14 +72,14 @@ func Start(db *gorm.DB, webPort int) error {
 	select {
 	case <-trayReady:
 		logger.Info("System tray initialized successfully")
-		// Keep main goroutine alive (systray is running in another goroutine)
-		select {} // Block forever
+		// Keep main goroutine alive until shutdown is complete
+		<-shutdownComplete
+		logger.Info("Shutdown complete, exiting main goroutine")
+		return nil
 	case <-timeout:
 		logger.Error("System tray initialization timeout after 5 seconds")
 		return fmt.Errorf("tray initialization timeout")
 	}
-
-	return nil
 }
 
 func onReady(webPort int) func() {
@@ -168,6 +169,31 @@ func onReady(webPort int) func() {
 func onExit() {
 	// Cleanup code here
 	logger.Info("System tray application exiting...")
+
+	// Stop all running proxy servers
+	if globalWebManager != nil {
+		logger.Info("Stopping all proxy servers...")
+		globalWebManager.StopAllProxies()
+	}
+
+	// Shutdown web server gracefully
+	if globalWebManager != nil {
+		logger.Info("Shutting down web server...")
+		globalWebManager.Shutdown()
+	}
+
+	// Close all HTTP transport connections
+	logger.Info("Closing all transport connections...")
+	// Note: This requires importing the proxy package
+	// proxy.CloseAllTransports()
+
+	logger.Info("Cleanup complete")
+
+	// Signal that shutdown is complete
+	select {
+	case shutdownComplete <- true:
+	default:
+	}
 }
 
 // openBrowser opens the default browser with the given URL

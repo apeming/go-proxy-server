@@ -1,8 +1,10 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -27,19 +29,26 @@ type ProxyServer struct {
 
 // Manager manages the web interface and proxy servers
 type Manager struct {
-	db          *gorm.DB
-	socksServer *ProxyServer
-	httpServer  *ProxyServer
-	mu          sync.RWMutex
-	webPort     int
-	actualPort  int // Actual port being used (after binding)
+	db             *gorm.DB
+	socksServer    *ProxyServer
+	httpServer     *ProxyServer
+	mu             sync.RWMutex
+	webPort        int
+	actualPort     int // Actual port being used (after binding)
+	webHttpServer  *http.Server
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
 }
 
 // NewManager creates a new web manager
 func NewManager(db *gorm.DB, webPort int) *Manager {
+	ctx, cancel := context.WithCancel(context.Background())
+
 	manager := &Manager{
-		db:      db,
-		webPort: webPort,
+		db:             db,
+		webPort:        webPort,
+		shutdownCtx:    ctx,
+		shutdownCancel: cancel,
 		socksServer: &ProxyServer{
 			Type: "socks5",
 		},
@@ -87,12 +96,22 @@ func (wm *Manager) startProxy(server *ProxyServer, port int, bindListen bool) er
 		fmt.Printf("Warning: Failed to save proxy config to database: %v\n", err)
 	}
 
-	// Start config reload goroutine if not already running
+	// Start config reload goroutine with shutdown context
 	go func() {
-		for server.Running {
-			auth.LoadCredentialsFromDB(wm.db)
-			auth.LoadWhitelistFromDB(wm.db)
-			time.Sleep(time.Second * 10)
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-wm.shutdownCtx.Done():
+				return
+			case <-ticker.C:
+				if !server.Running {
+					return
+				}
+				auth.LoadCredentialsFromDB(wm.db)
+				auth.LoadWhitelistFromDB(wm.db)
+			}
 		}
 	}()
 
@@ -161,4 +180,35 @@ func (wm *Manager) SetActualPort(port int) {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 	wm.actualPort = port
+}
+
+// StopAllProxies stops all running proxy servers
+func (wm *Manager) StopAllProxies() {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	if wm.socksServer.Running {
+		wm.stopProxy(wm.socksServer)
+	}
+
+	if wm.httpServer.Running {
+		wm.stopProxy(wm.httpServer)
+	}
+}
+
+// Shutdown gracefully shuts down the web server
+func (wm *Manager) Shutdown() error {
+	// Cancel the shutdown context to stop all goroutines
+	if wm.shutdownCancel != nil {
+		wm.shutdownCancel()
+	}
+
+	// Shutdown the HTTP server gracefully
+	if wm.webHttpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return wm.webHttpServer.Shutdown(ctx)
+	}
+
+	return nil
 }
