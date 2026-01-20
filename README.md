@@ -7,7 +7,7 @@
 ### 核心功能
 - 标准 SOCKS5 协议实现（支持 IPv4、IPv6、域名）
 - HTTP/HTTPS 代理实现（支持 CONNECT 隧道和 Keep-Alive）
-- 用户名/密码认证（bcrypt 加密）
+- 用户名/密码认证（SHA-256 加盐哈希）
 - IP 白名单访问控制
 - SQLite 数据库存储（纯 Go 实现，无需 CGO）
 - 支持 bind-listen 模式（多出口 IP 路由）
@@ -33,27 +33,50 @@
 
 ```
 .
+├── assets/                # 资源文件（图标等）
+├── bin/                   # 构建输出目录
 ├── cmd/
-│   └── server/             # 主程序入口
+│   └── server/           # 主程序入口
 │       └── main.go
-├── internal/               # 内部包（不对外暴露）
-│   ├── auth/              # 认证和授权（含 SSRF 防护）
-│   ├── autostart/         # 自动启动管理（Windows）
-│   ├── config/            # 配置管理
-│   ├── logger/            # 日志管理
-│   ├── models/            # 数据模型（User、Whitelist、ProxyConfig）
-│   ├── proxy/             # 代理实现（SOCKS5 和 HTTP）
-│   ├── proxyconfig/       # 代理配置管理
-│   ├── sysconfig/         # 系统配置管理
-│   ├── tray/              # 系统托盘（Windows）
-│   └── web/               # Web 管理界面
-├── scripts/               # 构建和运行脚本
-├── docs/                  # 文档
-├── Makefile              # 构建配置
-├── go.mod                # Go 模块定义
-├── CHANGELOG.md          # 详细更新日志
-├── CLAUDE.md             # Claude Code 项目指南
-└── README.md             # 项目说明
+├── internal/             # 内部包（不对外暴露）
+│   ├── auth/            # 认证和授权
+│   ├── autostart/       # 自动启动管理（Windows）
+│   ├── cache/           # 通用缓存基础设施
+│   ├── config/          # 配置管理
+│   ├── constants/       # 集中配置常量
+│   ├── logger/          # 日志管理
+│   ├── models/          # 数据模型（User、Whitelist、ProxyConfig）
+│   ├── proxy/           # 代理实现（SOCKS5 和 HTTP）
+│   │   ├── socks5.go   # SOCKS5 协议实现
+│   │   ├── http.go     # HTTP/HTTPS 代理实现
+│   │   ├── limiter.go  # 连接速率限制
+│   │   └── copy.go     # 数据中继工具
+│   ├── security/        # SSRF 和安全防护
+│   ├── singleinstance/  # Windows 单实例检查
+│   ├── tray/            # 系统托盘（Windows）
+│   └── web/             # Web 管理服务器
+│       ├── handlers.go  # HTTP API 处理器
+│       ├── manager.go   # 代理服务器生命周期管理
+│       ├── static.go    # 静态文件服务
+│       └── dist/        # 前端构建产物（来自 web-ui/）
+├── web-ui/               # 前端源代码（React + Vite + Ant Design）
+│   ├── src/             # React 组件和应用逻辑
+│   │   ├── api/        # API 客户端函数
+│   │   ├── components/ # React 组件
+│   │   ├── types/      # TypeScript 类型定义
+│   │   └── utils/      # 工具函数
+│   ├── public/          # 静态资源
+│   ├── dist/            # 构建输出（复制到 internal/web/dist/）
+│   ├── package.json     # Node.js 依赖
+│   └── vite.config.ts   # Vite 构建配置
+├── scripts/              # 构建和运行脚本
+├── docs/                 # 文档
+│   └── archive/         # 归档文档
+├── Makefile             # 构建配置
+├── go.mod               # Go 模块定义
+├── CHANGELOG.md         # 详细更新日志
+├── CLAUDE.md            # Claude Code 项目指南
+└── README.md            # 项目说明
 
 ```
 
@@ -233,17 +256,17 @@ mkdir -p bin && go build -o bin/go-proxy-server ./cmd/server
 - 如需本地免认证访问，请手动添加：`./bin/go-proxy-server addip -ip 127.0.0.1`
 - 白名单中的 IP 可以无需用户名/密码直接访问代理
 
-#### 列出白名单（未实现）
+#### 列出白名单
 
-```bash
-./bin/go-proxy-server listip
-```
+通过 Web 管理界面查看：访问 `http://localhost:9090` → IP 白名单管理
 
-#### 删除白名单 IP（未实现）
+**注意**：`listip` 命令行工具尚未实现，请使用 Web 界面或 API (`GET /api/whitelist`)
 
-```bash
-./bin/go-proxy-server delip -ip <IP地址>
-```
+#### 删除白名单 IP
+
+通过 Web 管理界面删除：访问 `http://localhost:9090` → IP 白名单管理
+
+**注意**：`delip` 命令行工具尚未实现，请使用 Web 界面或 API (`DELETE /api/whitelist`)
 
 ### 4. Web 管理界面
 
@@ -282,6 +305,8 @@ mkdir -p bin && go build -o bin/go-proxy-server ./cmd/server
 
 #### Web 管理界面功能
 
+Web 管理界面采用现代化技术栈构建（React + TypeScript + Vite + Ant Design），提供以下功能：
+
 - **代理服务控制**
   - 动态启动/停止 SOCKS5 代理服务器
   - 动态启动/停止 HTTP 代理服务器
@@ -295,9 +320,21 @@ mkdir -p bin && go build -o bin/go-proxy-server ./cmd/server
   - 显示用户创建时间
 
 - **IP 白名单管理**
-  - 添加 IP 到白名单（存储在数据库）
-  - 查看白名单列表（通过 Web 界面）
-  - 自动从数据库加载（定期刷新内存缓存）
+  - 添加 IP 到白名单
+  - 删除白名单 IP
+  - 查看白名单列表
+  - 实时生效，无需重启服务
+
+- **系统配置**
+  - 连接速率限制配置
+  - 超时参数配置
+  - 实时应用配置更改
+
+**技术特性**：
+- 响应式设计，支持桌面和移动设备
+- 实时状态更新（每 5 秒轮询）
+- 友好的错误提示和成功通知
+- 单页应用（SPA）架构，流畅的用户体验
 
 #### Windows 便携式应用（系统托盘）
 
@@ -529,7 +566,7 @@ wget https://example.com
    - 阻止访问内网地址，返回错误码 0x02
 6. **建立连接**：连接到目标主机（30 秒超时）
 7. **数据转发**：在客户端和目标主机之间双向转发数据，正确处理连接关闭（TCP half-close）
-8. **配置重载**：每 10 秒自动重新加载用户数据库和 IP 白名单（使用读写锁保证并发安全）
+8. **配置重载**：每 30 秒自动重新加载用户数据库和 IP 白名单（使用读写锁保证并发安全）
 
 ### HTTP 代理
 
@@ -548,7 +585,7 @@ wget https://example.com
 5. **请求处理**：
    - **CONNECT 方法**（HTTPS）：建立透明隧道，双向转发数据（30 秒连接超时）
    - **其他方法**（HTTP）：转发请求到目标服务器，返回响应（支持 Keep-Alive）
-6. **配置重载**：每 10 秒自动重新加载用户数据库和 IP 白名单（使用读写锁保证并发安全）
+6. **配置重载**：每 30 秒自动重新加载用户数据库和 IP 白名单（使用读写锁保证并发安全）
 
 ## 数据库结构
 
@@ -561,7 +598,7 @@ SQLite 数据库包含以下表：
 | id | INTEGER | 主键 |
 | ip | TEXT | 用户的连接 IP（仅用于审计和日志记录） |
 | username | TEXT | 用户名（全局唯一） |
-| password | BLOB | bcrypt 加密的密码 |
+| password | BLOB | SHA-256 加盐哈希的密码（格式：`$sha256$<salt>$<hash>`）|
 | created_at | DATETIME | 创建时间 |
 | updated_at | DATETIME | 更新时间 |
 
@@ -589,7 +626,7 @@ SQLite 数据库包含以下表：
 注意：
 - **v1.3.0 重要变更**：`username` 字段现在是全局唯一的（不再是 `ip` + `username` 组合唯一）
 - `ip` 字段仅用于审计和日志记录，不影响用户身份验证
-- 密码使用 bcrypt 算法加密存储
+- 密码使用 SHA-256 + 随机盐哈希存储（格式：`$sha256$<salt>$<hash>`）
 - 所有配置数据（用户、白名单、代理配置）都存储在数据库中，便于管理和备份
 
 ## 安全特性
@@ -627,7 +664,7 @@ SQLite 数据库包含以下表：
 
 防止通过响应时间差异枚举有效用户名：
 
-- 对不存在的用户名也执行 bcrypt 比较（使用预计算的虚拟哈希）
+- 对不存在的用户名也执行 SHA-256 比较（使用预计算的虚拟哈希）
 - 确保用户名存在和不存在时的响应时间一致
 - 统一返回"无效凭据"错误，不区分用户名或密码错误
 
@@ -662,7 +699,7 @@ SOCKS5 协议完整支持 IPv6：
 1. **密码安全**
    - 使用强密码（至少 12 字符，包含大小写字母、数字和特殊字符）
    - 定期更新用户密码
-   - 密码已使用 bcrypt 加密存储
+   - 密码已使用 SHA-256 + 随机盐哈希存储
 
 2. **访问控制**
    - 限制 IP 白名单范围，仅添加可信 IP

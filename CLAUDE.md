@@ -12,25 +12,49 @@ The project follows the standard Go project layout:
 
 ```
 .
+├── assets/                # Resource files (icons, etc.)
+├── bin/                   # Build output directory
 ├── cmd/
-│   └── server/             # Main application entry point
+│   └── server/           # Main application entry point
 │       └── main.go
-├── internal/               # Private application packages
-│   ├── auth/              # Authentication and authorization
-│   ├── cache/             # Generic caching infrastructure
-│   ├── config/            # Configuration management
-│   ├── httpproxy/         # HTTP/HTTPS proxy implementation
-│   ├── logger/            # Logging utilities
-│   ├── models/            # Database models
-│   ├── proxy/             # SOCKS5 proxy implementation
-│   ├── security/          # SSRF and security protection
-│   ├── tray/              # System tray (Windows only)
-│   └── web/               # Web management interface
-├── scripts/               # Build and utility scripts
-├── docs/                  # Documentation files
-├── Makefile              # Build automation
-├── go.mod                # Go module definition
-└── README.md             # User documentation
+├── internal/             # Private application packages
+│   ├── auth/            # Authentication and authorization
+│   ├── autostart/       # Windows autostart management (COM interface)
+│   ├── cache/           # Generic caching infrastructure
+│   ├── config/          # Configuration management
+│   ├── constants/       # Centralized configuration constants
+│   ├── logger/          # Logging utilities
+│   ├── models/          # Database models
+│   ├── proxy/           # Proxy implementations (SOCKS5 and HTTP/HTTPS)
+│   │   ├── socks5.go   # SOCKS5 protocol implementation
+│   │   ├── http.go     # HTTP/HTTPS proxy implementation
+│   │   ├── limiter.go  # Connection rate limiting
+│   │   └── copy.go     # Data relay utilities
+│   ├── security/        # SSRF and security protection
+│   ├── singleinstance/  # Windows single instance check (named mutexes)
+│   ├── tray/            # System tray (Windows only)
+│   └── web/             # Web management server
+│       ├── handlers.go  # HTTP API handlers
+│       ├── manager.go   # Proxy server lifecycle management
+│       ├── static.go    # Static file serving
+│       └── dist/        # Frontend build artifacts (from web-ui/)
+├── web-ui/               # Frontend source code (React + Vite + Ant Design)
+│   ├── src/             # React components and application logic
+│   │   ├── api/        # API client functions
+│   │   ├── components/ # React components
+│   │   ├── types/      # TypeScript type definitions
+│   │   └── utils/      # Utility functions
+│   ├── public/          # Static assets
+│   ├── dist/            # Build output (copied to internal/web/dist/)
+│   ├── package.json     # Node.js dependencies
+│   └── vite.config.ts   # Vite build configuration
+├── scripts/              # Build and utility scripts
+├── docs/                 # Documentation files
+│   └── archive/         # Archived documentation
+├── Makefile             # Build automation
+├── go.mod               # Go module definition
+├── CLAUDE.md            # Claude Code project guide
+└── README.md            # User documentation
 ```
 
 ## Build and Run Commands
@@ -126,12 +150,16 @@ When run without arguments:
 **cmd/server/main.go** - Entry point and CLI command routing
 - Initializes configuration with default paths in user data directory
 - Initializes SQLite database with GORM
-- **Default behavior (no arguments)**: Automatically starts web management interface on port 9090
+- **Default behavior (no arguments)**:
+  - Windows: Attempts to start system tray application, falls back to web server if tray initialization fails
+  - Non-Windows: Starts web server directly on port 9090 (or random port if 9090 is occupied)
+  - Auto-starts proxies based on saved configuration (if `AutoStart` flag is set in database)
 - Routes to subcommands: socks, http, both, web, adduser, deluser, listuser, addip
-- Starts background goroutine for config reloading (every 10 seconds) in socks/http/both modes
+- Starts background goroutine for config reloading (every 30 seconds) in socks/http/both modes
 - For `both` command: runs SOCKS5 in goroutine, HTTP in main thread, shared config reload
-- For `web` command or no arguments: initializes web.Manager and starts web server (no auto-start of proxies)
+- For `web` command or no arguments: initializes web.Manager and starts web server
 - Cross-platform data directory support via `config.GetDataDir()` (Windows/macOS/Linux/XDG)
+- Windows single instance check prevents multiple instances from running simultaneously
 
 **internal/proxy/socks5.go** - SOCKS5 protocol implementation
 - `HandleSocks5Connection()`: Main connection handler with authentication flow
@@ -148,6 +176,7 @@ When run without arguments:
 - HTTP Basic authentication via Proxy-Authorization header
 - Returns 407 Proxy Authentication Required on auth failure
 - Supports bind-listen mode for both CONNECT and regular requests
+- HTTP connection pooling for improved performance
 
 **internal/auth/** - Authentication and authorization package (modular design)
 
@@ -203,16 +232,56 @@ When run without arguments:
 - `GlobalConfig`: Global configuration instance
 - No external config file needed - all paths are automatically determined
 
+**internal/constants/constants.go** - Centralized configuration constants
+- `ConfigReloadInterval`: 30 seconds (config hot-reload interval)
+- `TimeoutReloadInterval`: 60 seconds (timeout config reload interval)
+- `DNSCacheCleanupInterval`: 10 minutes (DNS cache cleanup interval)
+- `DNSCacheTTL`: 5 minutes (DNS cache entry TTL)
+- `AuthCacheTTL`: 5 minutes (SOCKS5 authentication cache TTL)
+- `MaxDNSCacheSize`: 10,000 entries (DNS cache capacity)
+- Centralized constants for easy maintenance and consistency
+
+**internal/autostart/autostart.go** - Windows autostart management
+- `Enable()`: Creates shortcut in Windows startup folder via COM interface
+- `Disable()`: Removes shortcut from startup folder
+- Uses `github.com/go-ole/go-ole` for COM automation (no VBScript)
+- Startup folder path: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`
+- Pure Go implementation to avoid antivirus false positives
+
+**internal/singleinstance/singleinstance.go** - Windows single instance check
+- `Check()`: Ensures only one instance of the application runs
+- Uses Windows named mutexes for inter-process synchronization
+- Prevents multiple instances from conflicting on ports or database
+- Windows-only implementation (build tag: `// +build windows`)
+
+**internal/proxy/limiter.go** - Connection rate limiting
+- Per-IP connection rate limiting with configurable limits
+- Global connection limit enforcement
+- Thread-safe implementation with sync.Map
+- Automatic cleanup of expired rate limit entries
+- Configurable via database (system_configs table)
+
+**internal/proxy/copy.go** - Data relay utilities
+- `copyWithTimeout()`: Bidirectional data relay with timeout support
+- Proper TCP half-close handling (CloseWrite/CloseRead)
+- Error channel synchronization for goroutine coordination
+- Used by both SOCKS5 and HTTP proxy implementations
+
 **internal/logger/logger.go** - Logging utilities
 - `Init()`: Initializes logging to file for Windows GUI mode
 - `Close()`: Closes the log file
 - `Info()`, `Error()`: Logging functions with level prefixes
 
-**internal/web/server.go** - Web management server
+**internal/web/manager.go** - Web management server
 - `ProxyServer` struct: Manages individual proxy server lifecycle (Running flag, Listener, Port, BindListen)
 - `Manager` struct: Central manager for web interface and proxy servers
 - `NewManager()`: Factory function to create web manager
 - `StartServer()`: Starts HTTP server on localhost only (security feature) on specified port
+- `startProxy()`: Starts proxy in goroutine, manages listener and config reload
+- `stopProxy()`: Stops proxy server and closes listener
+- Thread-safe proxy state management with sync.RWMutex
+
+**internal/web/handlers.go** - HTTP API handlers
 - API endpoints:
   - `GET /`: Serves the HTML interface
   - `GET /api/status`: Returns current proxy server status (running/stopped, ports, bindListen)
@@ -221,25 +290,34 @@ When run without arguments:
   - `DELETE /api/users`: Deletes user
   - `GET /api/whitelist`: Lists all whitelist IPs
   - `POST /api/whitelist`: Adds IP to whitelist
+  - `DELETE /api/whitelist`: Deletes IP from whitelist
   - `POST /api/proxy/start`: Dynamically starts proxy server (socks5 or http)
   - `POST /api/proxy/stop`: Dynamically stops proxy server
-- `startProxy()`: Starts proxy in goroutine, manages listener and config reload
-- `stopProxy()`: Stops proxy server and closes listener
+  - `POST /api/proxy/config`: Updates proxy configuration (port, bind-listen)
+  - `POST /api/config`: Updates system configuration (rate limits, timeouts)
+  - `POST /api/shutdown`: Gracefully shuts down the application
+- RESTful API design with JSON request/response
+- Error handling with appropriate HTTP status codes
 
-**internal/web/html.go** - Embedded web interface
-- Complete HTML/CSS/JavaScript interface embedded as Go string constant
-- Responsive design with modern styling
+**internal/web/static.go** - Static file serving
+- Serves frontend build artifacts from `internal/web/dist/`
+- Embedded filesystem using Go 1.16+ embed directive
+- Serves React SPA with proper routing fallback
+
+**web-ui/** - Frontend application (React + TypeScript + Vite + Ant Design)
+- Modern React-based web interface built with Vite
+- TypeScript for type safety
+- Ant Design component library for UI
 - Features:
   - Proxy control cards for SOCKS5 and HTTP (start/stop, port config, bind-listen toggle)
   - Real-time status updates (polls every 5 seconds)
   - User management table (add, delete, list with creation time)
-  - IP whitelist management (add, list)
-  - Success/error message display
-- JavaScript functions:
-  - `startProxy(type)`, `stopProxy(type)`: Control proxy servers
-  - `loadUsers()`, `addUser()`, `deleteUser()`: Manage users
-  - `loadWhitelist()`, `addWhitelistIP()`: Manage whitelist
-  - `updateStatus()`: Refresh server status
+  - IP whitelist management (add, delete, list)
+  - System configuration (rate limits, timeouts)
+  - Success/error message display with notifications
+- Build output copied to `internal/web/dist/` for embedding
+- Development server: `npm run dev` (in web-ui/ directory)
+- Production build: `npm run build` (outputs to web-ui/dist/)
 
 **internal/tray/tray_windows.go** (Windows only, build tag: `// +build windows`)
 - System tray application for Windows
@@ -286,7 +364,7 @@ When `-bind-listen` flag is enabled:
 ### Both Mode (Simultaneous Proxies)
 
 When using `both` command:
-- Single shared config reload goroutine (10-second interval)
+- Single shared config reload goroutine (30-second interval)
 - SOCKS5 server runs in separate goroutine
 - HTTP server runs in main goroutine
 - Both share same credentials and whitelist (thread-safe access)
@@ -296,9 +374,9 @@ When using `both` command:
 ### Web Management Mode
 
 When using `web` command:
-- Starts HTTP web server on specified port (default: 9090)
+- Starts HTTP web server on specified port (default: 9090, uses random port if occupied)
 - **Security**: Listens only on localhost (127.0.0.1), not accessible from external network
-- Does NOT automatically start any proxy servers
+- Proxies can be started/stopped dynamically via API or auto-started based on saved configuration
 - Provides browser-based management interface
 - Proxies can be started/stopped dynamically via API:
   - Each proxy runs in separate goroutine when started
@@ -310,11 +388,12 @@ When using `web` command:
   - All configuration via web browser
   - Can compile with `-ldflags -H=windowsgui` to hide console
 - Web server blocks in main goroutine (http.ListenAndServe)
+- Auto-starts proxies if `AutoStart` flag is set in database (proxy_configs table)
 
 ### Concurrency Model
 
 - One goroutine per client connection (`handleConnection` or `handleHTTPConnection`)
-- Background goroutine for config reloading (10-second interval) in socks/http/both modes
+- Background goroutine for config reloading (30-second interval) in socks/http/both modes
 - Thread-safe credential and whitelist access with RWMutex
 - Bidirectional relay uses two goroutines with error channel synchronization
 - In `both` mode: SOCKS5 listener in goroutine, HTTP listener in main thread
@@ -354,6 +433,7 @@ The data directory is automatically created on first run.
 - `github.com/glebarez/sqlite` - Pure Go SQLite driver (no CGO required)
 - `modernc.org/sqlite` - SQLite implementation in pure Go
 - `github.com/getlantern/systray` - System tray icon for Windows
+- `github.com/go-ole/go-ole` - COM automation for Windows (autostart management)
 - Standard library for networking, HTTP, concurrency, and cryptography (crypto/sha256, crypto/rand)
 
 **Important**: This project uses a pure Go implementation of SQLite (`github.com/glebarez/sqlite`), which does not require CGO. This makes cross-compilation much easier, especially for Windows targets.
@@ -366,12 +446,18 @@ The data directory is automatically created on first run.
 - No automatic bypass for local connections - must be explicitly whitelisted if needed
 - **SSRF Protection**: Blocks access to private IP addresses (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, IPv6 private ranges)
 - **Timing Attack Protection**: Constant-time credential verification to prevent username enumeration
+- **Connection Rate Limiting**: Per-IP and global connection limits with configurable thresholds
+- **Authentication Cache**: SOCKS5 authentication results cached for 5 minutes to reduce database load
+- **DNS Caching**: LRU cache with 10,000 entry limit and 5-minute TTL to reduce DNS lookup overhead
+- **HTTP Connection Pooling**: Reuses connections to destination servers for improved performance
+- **Single Instance Check**: Windows-only feature prevents multiple instances from running simultaneously
+- **Autostart Management**: Windows startup folder integration via COM interface (no registry modification)
 - SOCKS5 supports IPv4 (0x01), IPv6 (0x04), and domain name (0x03) address types
 - SOCKS5 validates protocol version, CMD field, and authentication sub-protocol version
 - SOCKS5 returns precise error codes (network unreachable, host unreachable, connection refused, timeout, etc.)
 - HTTP proxy supports CONNECT method (HTTPS tunneling) and regular HTTP methods
 - HTTP authentication uses Proxy-Authorization header with Basic scheme
 - Proper TCP connection cleanup with half-close support
-- Config hot-reload without server restart
+- Config hot-reload without server restart (30-second interval for credentials/whitelist, 60-second interval for timeouts)
 - Both proxy types share same user database and whitelist
 - Database operations use unique constraints to prevent race conditions
