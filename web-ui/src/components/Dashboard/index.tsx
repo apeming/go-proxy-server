@@ -51,9 +51,11 @@ const Dashboard: React.FC = () => {
     return `${minutes}分钟`;
   };
 
-  const loadData = async () => {
+  const loadData = async (isInitialLoad = false) => {
     try {
-      setLoading(true);
+      if (isInitialLoad) {
+        setLoading(true);
+      }
       const [statusRes, usersRes, whitelistRes, metricsRes] = await Promise.all([
         getProxyStatus(),
         getUsers(),
@@ -67,7 +69,9 @@ const Dashboard: React.FC = () => {
     } catch (error) {
       console.error('Failed to load dashboard data:', error);
     } finally {
-      setLoading(false);
+      if (isInitialLoad) {
+        setLoading(false);
+      }
     }
   };
 
@@ -83,10 +87,10 @@ const Dashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    loadData();
+    loadData(true); // Initial load with loading state
     loadHistory();
     const interval = setInterval(() => {
-      loadData();
+      loadData(false); // Subsequent updates without loading state
       loadHistory();
     }, 5000); // Update every 5 seconds
     return () => clearInterval(interval);
@@ -122,12 +126,7 @@ const Dashboard: React.FC = () => {
     yField: 'value',
     seriesField: 'type',
     smooth: true,
-    animation: {
-      appear: {
-        animation: 'path-in',
-        duration: 1000,
-      },
-    },
+    animation: false, // Disable animation to prevent flashing on data updates
     yAxis: {
       label: {
         formatter: (v: string) => `${v} MB/s`,
@@ -141,12 +140,7 @@ const Dashboard: React.FC = () => {
     yField: 'value',
     smooth: true,
     color: '#5B8FF9',
-    animation: {
-      appear: {
-        animation: 'path-in',
-        duration: 1000,
-      },
-    },
+    animation: false, // Disable animation to prevent flashing on data updates
     yAxis: {
       label: {
         formatter: (v: string) => `${v} 个`,
