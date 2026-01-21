@@ -16,6 +16,7 @@ import (
 	"go-proxy-server/internal/config"
 	"go-proxy-server/internal/constants"
 	"go-proxy-server/internal/logger"
+	"go-proxy-server/internal/metrics"
 	"go-proxy-server/internal/security"
 )
 
@@ -209,10 +210,19 @@ func shouldCloseConnection(req *http.Request, resp *http.Response) bool {
 func HandleHTTPConnection(conn net.Conn, bindListen bool) {
 	defer conn.Close()
 
+	// Record connection
+	if collector := metrics.GetCollector(); collector != nil {
+		collector.RecordConnection()
+		defer collector.RecordDisconnection()
+	}
+
 	// Get the client's IP address early for rate limiting
 	clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
 	if !ok {
 		logger.Error("Connection is not TCP")
+		if collector := metrics.GetCollector(); collector != nil {
+			collector.RecordError()
+		}
 		return
 	}
 	clientIP := clientAddr.IP.String()
@@ -223,6 +233,9 @@ func HandleHTTPConnection(conn net.Conn, bindListen bool) {
 		logger.Warn("Connection limit reached for IP %s", clientIP)
 		// Try to send 503 Service Unavailable before closing
 		writeHTTPError(conn, http.StatusServiceUnavailable, "Service Unavailable", nil)
+		if collector := metrics.GetCollector(); collector != nil {
+			collector.RecordError()
+		}
 		return
 	}
 	defer limiter.Release(clientIP)

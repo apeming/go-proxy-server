@@ -12,6 +12,7 @@ import (
 	"go-proxy-server/internal/auth"
 	"go-proxy-server/internal/autostart"
 	"go-proxy-server/internal/config"
+	"go-proxy-server/internal/metrics"
 	"go-proxy-server/internal/models"
 )
 
@@ -28,6 +29,8 @@ func (wm *Manager) StartServer() error {
 	mux.HandleFunc("/api/proxy/stop", wm.handleProxyStop)
 	mux.HandleFunc("/api/proxy/config", wm.handleProxyConfig)
 	mux.HandleFunc("/api/config", wm.handleConfig)
+	mux.HandleFunc("/api/metrics/realtime", wm.handleMetricsRealtime)
+	mux.HandleFunc("/api/metrics/history", wm.handleMetricsHistory)
 	mux.HandleFunc("/api/shutdown", wm.handleShutdown)
 
 	// Static files and SPA fallback (must be last)
@@ -540,4 +543,74 @@ func (wm *Manager) handleShutdown(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		os.Exit(0)
 	}()
+}
+
+// handleMetricsRealtime returns real-time metrics snapshot
+func (wm *Manager) handleMetricsRealtime(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	collector := metrics.GetCollector()
+	if collector == nil {
+		http.Error(w, "Metrics collector not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	snapshot := collector.GetSnapshot()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(snapshot)
+}
+
+// handleMetricsHistory returns historical metrics data
+func (wm *Manager) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	collector := metrics.GetCollector()
+	if collector == nil {
+		http.Error(w, "Metrics collector not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	// Parse query parameters
+	query := r.URL.Query()
+	startTime := query.Get("startTime")
+	endTime := query.Get("endTime")
+	limit := query.Get("limit")
+
+	// Default values
+	var start, end int64
+	var limitInt int = 100
+
+	if startTime != "" {
+		fmt.Sscanf(startTime, "%d", &start)
+	} else {
+		// Default to last 24 hours
+		start = time.Now().Add(-24 * time.Hour).Unix()
+	}
+
+	if endTime != "" {
+		fmt.Sscanf(endTime, "%d", &end)
+	} else {
+		end = time.Now().Unix()
+	}
+
+	if limit != "" {
+		fmt.Sscanf(limit, "%d", &limitInt)
+	}
+
+	// Get historical snapshots from database
+	snapshots, err := collector.GetHistoricalSnapshots(start, end, limitInt)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to retrieve metrics: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(snapshots)
 }

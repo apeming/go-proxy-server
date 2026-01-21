@@ -9,6 +9,7 @@ import (
 
 	"go-proxy-server/internal/constants"
 	"go-proxy-server/internal/logger"
+	"go-proxy-server/internal/metrics"
 )
 
 // bufferPool is a pool of byte buffers to reduce GC pressure
@@ -40,6 +41,11 @@ func copyWithIdleTimeout(ctx context.Context, dst, src net.Conn, readTimeout, wr
 
 		n, err := src.Read(buf)
 		if n > 0 {
+			// Record bytes received
+			if collector := metrics.GetCollector(); collector != nil {
+				collector.RecordBytesReceived(int64(n))
+			}
+
 			// Set write deadline (idle timeout)
 			dst.SetWriteDeadline(time.Now().Add(writeTimeout))
 
@@ -48,9 +54,17 @@ func copyWithIdleTimeout(ctx context.Context, dst, src net.Conn, readTimeout, wr
 			for written < n {
 				nw, writeErr := dst.Write(buf[written:n])
 				if writeErr != nil {
+					if collector := metrics.GetCollector(); collector != nil {
+						collector.RecordError()
+					}
 					return writeErr
 				}
 				written += nw
+			}
+
+			// Record bytes sent
+			if collector := metrics.GetCollector(); collector != nil {
+				collector.RecordBytesSent(int64(n))
 			}
 		}
 
@@ -61,6 +75,9 @@ func copyWithIdleTimeout(ctx context.Context, dst, src net.Conn, readTimeout, wr
 			// Check if it's a timeout error
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				logger.Warn("Idle timeout reached during data transfer")
+			}
+			if collector := metrics.GetCollector(); collector != nil {
+				collector.RecordError()
 			}
 			return err
 		}

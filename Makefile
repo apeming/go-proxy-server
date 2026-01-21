@@ -1,8 +1,10 @@
-.PHONY: build build-linux build-windows build-windows-gui build-darwin build-resources clean clean-resources test run help frontend-build frontend-deps frontend-dev frontend-clean
+.PHONY: build build-linux build-windows build-windows-gui build-darwin build-resources clean clean-resources test run help frontend-build frontend-deps frontend-dev frontend-clean benchmark benchmark-linux benchmark-windows benchmark-darwin benchmark-all
 
 # Binary name
 BINARY_NAME=go-proxy-server
+BENCHMARK_NAME=benchmark
 MAIN_PATH=./cmd/server
+BENCHMARK_PATH=./cmd/benchmark
 OUTPUT_DIR=bin
 RESOURCE_SCRIPT=./scripts/build_resources.sh
 SYSO_FILE=$(MAIN_PATH)/resource_windows_amd64.syso
@@ -96,6 +98,38 @@ build-darwin: frontend-build
 build-all: build-linux build-windows build-windows-gui build-darwin
 	@echo "All builds complete!"
 
+# Build benchmark tool for current platform
+benchmark:
+	@echo "Building benchmark tool for current platform..."
+	@mkdir -p $(OUTPUT_DIR)
+	go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(BENCHMARK_NAME) $(BENCHMARK_PATH)
+	@echo "Build complete: $(OUTPUT_DIR)/$(BENCHMARK_NAME)"
+
+# Build benchmark tool for Linux
+benchmark-linux:
+	@echo "Building benchmark tool for Linux..."
+	@mkdir -p $(OUTPUT_DIR)
+	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(BENCHMARK_NAME)-linux-amd64 $(BENCHMARK_PATH)
+	@echo "Build complete: $(OUTPUT_DIR)/$(BENCHMARK_NAME)-linux-amd64"
+
+# Build benchmark tool for Windows
+benchmark-windows:
+	@echo "Building benchmark tool for Windows..."
+	@mkdir -p $(OUTPUT_DIR)
+	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(BENCHMARK_NAME).exe $(BENCHMARK_PATH)
+	@echo "Build complete: $(OUTPUT_DIR)/$(BENCHMARK_NAME).exe"
+
+# Build benchmark tool for macOS
+benchmark-darwin:
+	@echo "Building benchmark tool for macOS..."
+	@mkdir -p $(OUTPUT_DIR)
+	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(BENCHMARK_NAME)-darwin-amd64 $(BENCHMARK_PATH)
+	@echo "Build complete: $(OUTPUT_DIR)/$(BENCHMARK_NAME)-darwin-amd64"
+
+# Build benchmark tool for all platforms
+benchmark-all: benchmark-linux benchmark-windows benchmark-darwin
+	@echo "All benchmark builds complete!"
+
 # Clean Windows resources
 clean-resources:
 	@echo "Cleaning Windows resources..."
@@ -146,6 +180,11 @@ help:
 	@echo "  make build-darwin       - Build for macOS (includes frontend)"
 	@echo "  make build-resources    - Build Windows resource file (.syso)"
 	@echo "  make build-all          - Build for all platforms (includes frontend)"
+	@echo "  make benchmark          - Build benchmark tool for current platform"
+	@echo "  make benchmark-linux    - Build benchmark tool for Linux"
+	@echo "  make benchmark-windows  - Build benchmark tool for Windows"
+	@echo "  make benchmark-darwin   - Build benchmark tool for macOS"
+	@echo "  make benchmark-all      - Build benchmark tool for all platforms"
 	@echo "  make frontend-build     - Build frontend only"
 	@echo "  make frontend-dev       - Start frontend dev server (port 3000)"
 	@echo "  make frontend-deps      - Install frontend dependencies"

@@ -20,6 +20,7 @@ import (
 	"go-proxy-server/internal/config"
 	"go-proxy-server/internal/constants"
 	applogger "go-proxy-server/internal/logger"
+	"go-proxy-server/internal/metrics"
 	"go-proxy-server/internal/models"
 	"go-proxy-server/internal/proxy"
 	"go-proxy-server/internal/singleinstance"
@@ -181,12 +182,16 @@ func main() {
 	}
 	applogger.Info("Database opened successfully")
 
-	err = db.AutoMigrate(&models.User{}, &models.Whitelist{}, &models.ProxyConfig{}, &models.SystemConfig{})
+	err = db.AutoMigrate(&models.User{}, &models.Whitelist{}, &models.ProxyConfig{}, &models.SystemConfig{}, &models.MetricsSnapshot{}, &models.AlertConfig{}, &models.AlertHistory{})
 	if err != nil {
 		applogger.Error("Failed to migrate database: %v", err)
 		return
 	}
 	applogger.Info("Database migration completed")
+
+	// Initialize metrics collector (10-second snapshot interval)
+	metrics.InitCollector(db, 10*time.Second)
+	applogger.Info("Metrics collector initialized")
 
 	// Initialize timeout configuration from database
 	if err := config.InitTimeout(db); err != nil {
@@ -276,12 +281,8 @@ func main() {
 				}()
 
 				// Attempt to start tray (this blocks if successful)
-				if err := tray.Start(db, 0); err != nil {
-					applogger.Error("System tray failed to start: %v", err)
-					trayStarted = false
-				} else {
-					trayStarted = true
-				}
+				tray.Start(db, 0)
+				trayStarted = true
 			}()
 
 			// If tray failed to start, fallback to web mode

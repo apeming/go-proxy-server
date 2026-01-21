@@ -1,6 +1,6 @@
 module go-proxy-server
 
-go 1.19
+go 1.24.0
 
 require (
 	github.com/getlantern/systray v1.2.2
@@ -25,7 +25,8 @@ require (
 	github.com/mattn/go-isatty v0.0.17 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/sys v0.10.0 // indirect
+	golang.org/x/net v0.49.0 // indirect
+	golang.org/x/sys v0.40.0 // indirect
 	modernc.org/libc v1.22.5 // indirect
 	modernc.org/mathutil v1.5.0 // indirect
 	modernc.org/memory v1.5.0 // indirect

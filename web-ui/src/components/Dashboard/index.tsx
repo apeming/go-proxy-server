@@ -7,11 +7,18 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   ThunderboltOutlined,
+  CloudUploadOutlined,
+  CloudDownloadOutlined,
+  LinkOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
+import { Line } from '@ant-design/charts';
 import { getProxyStatus } from '../../api/proxy';
 import { getUsers } from '../../api/user';
 import { getWhitelist } from '../../api/whitelist';
+import { getRealtimeMetrics, getMetricsHistory } from '../../api/metrics';
 import type { ProxyStatus } from '../../types/proxy';
+import type { MetricsSnapshot, MetricsHistory } from '../../types/metrics';
 
 const { Title, Text } = Typography;
 
@@ -19,19 +26,44 @@ const Dashboard: React.FC = () => {
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [userCount, setUserCount] = useState(0);
   const [whitelistCount, setWhitelistCount] = useState(0);
+  const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null);
+  const [metricsHistory, setMetricsHistory] = useState<MetricsHistory[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
+  };
+
+  const formatSpeed = (bytesPerSec: number): string => {
+    return formatBytes(bytesPerSec) + '/s';
+  };
+
+  const formatUptime = (seconds: number): string => {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (days > 0) return `${days}天 ${hours}小时`;
+    if (hours > 0) return `${hours}小时 ${minutes}分钟`;
+    return `${minutes}分钟`;
+  };
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const [statusRes, usersRes, whitelistRes] = await Promise.all([
+      const [statusRes, usersRes, whitelistRes, metricsRes] = await Promise.all([
         getProxyStatus(),
         getUsers(),
         getWhitelist(),
+        getRealtimeMetrics(),
       ]);
       setProxyStatus(statusRes.data);
       setUserCount(usersRes.data.length);
       setWhitelistCount(whitelistRes.data.length);
+      setMetrics(metricsRes);
     } catch (error) {
       console.error('Failed to load dashboard data:', error);
     } finally {
@@ -39,9 +71,24 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const loadHistory = async () => {
+    try {
+      const endTime = Math.floor(Date.now() / 1000);
+      const startTime = endTime - 3600; // Last hour
+      const history = await getMetricsHistory(startTime, endTime, 60);
+      setMetricsHistory(history);
+    } catch (error) {
+      console.error('Failed to load metrics history:', error);
+    }
+  };
+
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 10000);
+    loadHistory();
+    const interval = setInterval(() => {
+      loadData();
+      loadHistory();
+    }, 5000); // Update every 5 seconds
     return () => clearInterval(interval);
   }, []);
 
@@ -49,6 +96,63 @@ const Dashboard: React.FC = () => {
     proxyStatus?.socks5?.running,
     proxyStatus?.http?.running,
   ].filter(Boolean).length;
+
+  // Prepare chart data
+  const bandwidthData = metricsHistory.map((h) => ([
+    {
+      time: new Date(h.Timestamp * 1000).toLocaleTimeString(),
+      value: h.UploadSpeed / 1024 / 1024, // Convert to MB/s
+      type: '上传速度',
+    },
+    {
+      time: new Date(h.Timestamp * 1000).toLocaleTimeString(),
+      value: h.DownloadSpeed / 1024 / 1024, // Convert to MB/s
+      type: '下载速度',
+    },
+  ])).flat();
+
+  const connectionsData = metricsHistory.map((h) => ({
+    time: new Date(h.Timestamp * 1000).toLocaleTimeString(),
+    value: h.ActiveConnections,
+  }));
+
+  const bandwidthConfig = {
+    data: bandwidthData,
+    xField: 'time',
+    yField: 'value',
+    seriesField: 'type',
+    smooth: true,
+    animation: {
+      appear: {
+        animation: 'path-in',
+        duration: 1000,
+      },
+    },
+    yAxis: {
+      label: {
+        formatter: (v: string) => `${v} MB/s`,
+      },
+    },
+  };
+
+  const connectionsConfig = {
+    data: connectionsData,
+    xField: 'time',
+    yField: 'value',
+    smooth: true,
+    color: '#5B8FF9',
+    animation: {
+      appear: {
+        animation: 'path-in',
+        duration: 1000,
+      },
+    },
+    yAxis: {
+      label: {
+        formatter: (v: string) => `${v} 个`,
+      },
+    },
+  };
 
   return (
     <div>
@@ -100,6 +204,119 @@ const Dashboard: React.FC = () => {
               prefix={<CheckCircleOutlined />}
               valueStyle={{ color: '#fff', fontSize: '24px', fontWeight: 'bold' }}
             />
+          </Card>
+        </Col>
+      </Row>
+
+      <Title level={3} style={{ marginTop: 32, marginBottom: 24 }}>
+        实时监控
+      </Title>
+
+      <Row gutter={[24, 24]}>
+        <Col xs={24} sm={12} lg={6}>
+          <Card loading={loading} bordered={false}>
+            <Statistic
+              title="活跃连接数"
+              value={metrics?.activeConnections || 0}
+              prefix={<LinkOutlined />}
+              suffix="个"
+              valueStyle={{ color: '#1890ff' }}
+            />
+          </Card>
+        </Col>
+
+        <Col xs={24} sm={12} lg={6}>
+          <Card loading={loading} bordered={false}>
+            <Statistic
+              title="上传速度"
+              value={metrics ? formatSpeed(metrics.uploadSpeed) : '0 B/s'}
+              prefix={<CloudUploadOutlined />}
+              valueStyle={{ color: '#52c41a' }}
+            />
+          </Card>
+        </Col>
+
+        <Col xs={24} sm={12} lg={6}>
+          <Card loading={loading} bordered={false}>
+            <Statistic
+              title="下载速度"
+              value={metrics ? formatSpeed(metrics.downloadSpeed) : '0 B/s'}
+              prefix={<CloudDownloadOutlined />}
+              valueStyle={{ color: '#722ed1' }}
+            />
+          </Card>
+        </Col>
+
+        <Col xs={24} sm={12} lg={6}>
+          <Card loading={loading} bordered={false}>
+            <Statistic
+              title="错误计数"
+              value={metrics?.errorCount || 0}
+              prefix={<WarningOutlined />}
+              suffix="次"
+              valueStyle={{ color: metrics && metrics.errorCount > 0 ? '#ff4d4f' : '#52c41a' }}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[24, 24]} style={{ marginTop: 24 }}>
+        <Col xs={24} sm={12} lg={6}>
+          <Card loading={loading} bordered={false}>
+            <Statistic
+              title="总连接数"
+              value={metrics?.totalConnections || 0}
+              suffix="次"
+              valueStyle={{ fontSize: '20px' }}
+            />
+          </Card>
+        </Col>
+
+        <Col xs={24} sm={12} lg={6}>
+          <Card loading={loading} bordered={false}>
+            <Statistic
+              title="接收流量"
+              value={metrics ? formatBytes(metrics.bytesReceived) : '0 B'}
+              valueStyle={{ fontSize: '20px', color: '#1890ff' }}
+            />
+          </Card>
+        </Col>
+
+        <Col xs={24} sm={12} lg={6}>
+          <Card loading={loading} bordered={false}>
+            <Statistic
+              title="发送流量"
+              value={metrics ? formatBytes(metrics.bytesSent) : '0 B'}
+              valueStyle={{ fontSize: '20px', color: '#722ed1' }}
+            />
+          </Card>
+        </Col>
+
+        <Col xs={24} sm={12} lg={6}>
+          <Card loading={loading} bordered={false}>
+            <Statistic
+              title="运行时长"
+              value={metrics ? formatUptime(metrics.uptime) : '0分钟'}
+              valueStyle={{ fontSize: '20px', color: '#52c41a' }}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      <Title level={3} style={{ marginTop: 32, marginBottom: 24 }}>
+        流量趋势（最近1小时）
+      </Title>
+
+      <Row gutter={[24, 24]}>
+        <Col xs={24} lg={12}>
+          <Card title="带宽使用情况" bordered={false}>
+            <Line {...bandwidthConfig} height={300} />
+          </Card>
+        </Col>
+
+        <Col xs={24} lg={12}>
+          <Card title="连接数变化" bordered={false}>
+            <Line {...connectionsConfig} height={300} />
           </Card>
         </Col>
       </Row>

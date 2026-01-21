@@ -13,6 +13,7 @@ import (
 	"go-proxy-server/internal/auth"
 	"go-proxy-server/internal/config"
 	"go-proxy-server/internal/logger"
+	"go-proxy-server/internal/metrics"
 	"go-proxy-server/internal/security"
 )
 
@@ -60,10 +61,19 @@ const (
 func HandleSocks5Connection(conn net.Conn, bindListen bool) {
 	defer conn.Close()
 
+	// Record connection
+	if collector := metrics.GetCollector(); collector != nil {
+		collector.RecordConnection()
+		defer collector.RecordDisconnection()
+	}
+
 	// Get the client's IP address early for rate limiting
 	clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
 	if !ok {
 		logger.Error("Connection is not TCP")
+		if collector := metrics.GetCollector(); collector != nil {
+			collector.RecordError()
+		}
 		return
 	}
 	clientIP := clientAddr.IP.String()
@@ -72,6 +82,9 @@ func HandleSocks5Connection(conn net.Conn, bindListen bool) {
 	limiter := GetSOCKS5Limiter()
 	if !limiter.Acquire(clientIP) {
 		logger.Warn("Connection limit reached for IP %s", clientIP)
+		if collector := metrics.GetCollector(); collector != nil {
+			collector.RecordError()
+		}
 		return
 	}
 	defer limiter.Release(clientIP)
