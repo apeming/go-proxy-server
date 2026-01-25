@@ -403,6 +403,9 @@ func (wm *Manager) handleConfig(w http.ResponseWriter, r *http.Request) {
 				"registryEnabled":    registryEnabled,
 				"autostartSupported": true,
 			},
+			"security": map[string]interface{}{
+				"allowPrivateIPAccess": config.GetAllowPrivateIPAccess(),
+			},
 		}
 
 		json.NewEncoder(w).Encode(response)
@@ -422,6 +425,9 @@ func (wm *Manager) handleConfig(w http.ResponseWriter, r *http.Request) {
 			System *struct {
 				AutostartEnabled bool `json:"autostartEnabled"`
 			} `json:"system"`
+			Security *struct {
+				AllowPrivateIPAccess bool `json:"allowPrivateIPAccess"`
+			} `json:"security"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -500,6 +506,14 @@ func (wm *Manager) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := config.SetSystemConfig(wm.db, config.KeyAutoStart, value); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		// Update security settings if provided
+		if req.Security != nil {
+			if err := config.UpdateAllowPrivateIPAccess(wm.db, req.Security.AllowPrivateIPAccess); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to update security configuration: %v", err), http.StatusInternalServerError)
 				return
 			}
 		}

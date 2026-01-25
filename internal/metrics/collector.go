@@ -178,7 +178,7 @@ func (c *Collector) GetHistoricalSnapshots(startTime, endTime int64, limit int) 
 	var snapshots []models.MetricsSnapshot
 
 	query := c.db.Where("timestamp >= ? AND timestamp <= ?", startTime, endTime).
-		Order("timestamp DESC")
+		Order("timestamp ASC")
 
 	if limit > 0 {
 		query = query.Limit(limit)

@@ -210,6 +210,13 @@ func main() {
 	}
 	applogger.Info("Connection limiter configuration initialized")
 
+	// Initialize security configuration from database
+	if err := config.InitSecurityConfig(db); err != nil {
+		applogger.Error("Failed to initialize security configuration: %v", err)
+		return
+	}
+	applogger.Info("Security configuration initialized")
+
 	// Configure database connection pool
 	sqlDB, err := db.DB()
 	if err != nil {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Form, InputNumber, Button, Row, Col, message, Typography, Alert, Switch, Space } from 'antd';
-import { SettingOutlined, SaveOutlined, ClockCircleOutlined, ApiOutlined, WindowsOutlined, CheckCircleOutlined, WarningOutlined } from '@ant-design/icons';
+import { SettingOutlined, SaveOutlined, ClockCircleOutlined, ApiOutlined, WindowsOutlined, CheckCircleOutlined, WarningOutlined, SafetyOutlined } from '@ant-design/icons';
 import { getConfig, saveConfig } from '../../api/config';
 import type { UnifiedConfig } from '../../types/api';
 
@@ -23,6 +23,7 @@ const ConfigManagement: React.FC = () => {
         maxConcurrentConnections: response.data.limiter.maxConcurrentConnections,
         maxConcurrentConnectionsPerIP: response.data.limiter.maxConcurrentConnectionsPerIP,
         autostartEnabled: response.data.system.autostartEnabled,
+        allowPrivateIPAccess: response.data.security.allowPrivateIPAccess,
       });
     } catch (error) {
       console.error('Failed to load config:', error);
@@ -51,6 +52,9 @@ const ConfigManagement: React.FC = () => {
         },
         system: {
           autostartEnabled: values.autostartEnabled,
+        },
+        security: {
+          allowPrivateIPAccess: values.allowPrivateIPAccess,
         },
       });
       message.success('配置保存成功');
@@ -81,6 +85,7 @@ const ConfigManagement: React.FC = () => {
           maxConcurrentConnections: 100000,
           maxConcurrentConnectionsPerIP: 1000,
           autostartEnabled: false,
+          allowPrivateIPAccess: false,
         }}
       >
         <Row gutter={[24, 24]}>
@@ -257,6 +262,82 @@ const ConfigManagement: React.FC = () => {
                 message="重要提示"
                 description="修改连接限制配置后，需要重启代理服务器才能生效"
                 type="warning"
+                showIcon
+                style={{ marginTop: 16 }}
+              />
+            </Card>
+          </Col>
+
+          {/* 安全配置 */}
+          <Col span={24}>
+            <Card
+              title={
+                <Space>
+                  <SafetyOutlined style={{ color: '#1890ff' }} />
+                  <Text strong>安全配置</Text>
+                </Space>
+              }
+              bordered={false}
+              style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}
+              loading={loading}
+            >
+              <Alert
+                message="安全警告"
+                description={
+                  <div>
+                    <Paragraph style={{ marginBottom: 8 }}>
+                      默认情况下，代理服务器会阻止访问内网地址（如 127.0.0.1, 192.168.x.x, 10.x.x.x 等），
+                      以防止服务器端请求伪造（SSRF）攻击。
+                    </Paragraph>
+                    <Paragraph style={{ marginBottom: 0 }}>
+                      <Text strong type="danger">警告：</Text>
+                      <Text type="danger">
+                        允许访问内网地址可能带来安全风险，仅在受信任的环境中启用此选项。
+                        启用后，攻击者可能通过代理访问您的内网资源。
+                      </Text>
+                    </Paragraph>
+                  </div>
+                }
+                type="warning"
+                showIcon
+                style={{ marginBottom: 24 }}
+              />
+
+              <div style={{
+                padding: '20px',
+                background: '#fafafa',
+                borderRadius: '8px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}>
+                <Space>
+                  <SafetyOutlined style={{ fontSize: '24px', color: '#1890ff' }} />
+                  <div>
+                    <Text strong style={{ fontSize: '16px' }}>允许访问内网地址</Text>
+                    <br />
+                    <Text type="secondary" style={{ fontSize: '13px' }}>
+                      关闭 SSRF 保护，允许代理访问私有 IP 地址
+                    </Text>
+                  </div>
+                </Space>
+                <Form.Item
+                  name="allowPrivateIPAccess"
+                  valuePropName="checked"
+                  style={{ marginBottom: 0 }}
+                >
+                  <Switch
+                    checkedChildren="已允许"
+                    unCheckedChildren="已阻止"
+                    size="default"
+                  />
+                </Form.Item>
+              </div>
+
+              <Alert
+                message="配置生效说明"
+                description="此配置修改后立即生效，无需重启代理服务器"
+                type="info"
                 showIcon
                 style={{ marginTop: 16 }}
               />

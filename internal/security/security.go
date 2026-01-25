@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go-proxy-server/internal/cache"
+	"go-proxy-server/internal/config"
 	"go-proxy-server/internal/constants"
 	"go-proxy-server/internal/logger"
 )
@@ -69,6 +70,11 @@ func IsPrivateIP(ip net.IP) bool {
 // Note: This is the initial check before connection. Use VerifyConnectedIP() after
 // establishing connection to prevent DNS rebinding attacks.
 func CheckSSRF(host string) error {
+	// Check if private IP access is allowed
+	if config.GetAllowPrivateIPAccess() {
+		return nil // Allow access, skip SSRF check
+	}
+
 	// Start DNS cache cleanup goroutine on first call
 	if dnsCacheCleanupStarted.CompareAndSwap(false, true) {
 		go cleanupDNSCache()
@@ -137,6 +143,11 @@ func CheckSSRF(host string) error {
 // This prevents DNS rebinding attacks where DNS resolves to public IP initially
 // but later resolves to private IP when connection is established
 func VerifyConnectedIP(conn net.Conn) error {
+	// Check if private IP access is allowed
+	if config.GetAllowPrivateIPAccess() {
+		return nil // Allow access, skip verification
+	}
+
 	if conn == nil {
 		return fmt.Errorf("connection is nil")
 	}
