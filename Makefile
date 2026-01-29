@@ -47,6 +47,7 @@ frontend-build: check-npm
 frontend-clean:
 	@echo "Cleaning frontend build..."
 	@rm -rf $(FRONTEND_DIST)
+	@rm -rf internal/web/dist
 	@rm -rf $(FRONTEND_DIR)/node_modules
 
 # Development: run frontend dev server
