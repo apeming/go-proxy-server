@@ -596,6 +596,7 @@ func (wm *Manager) handleMetricsHistory(w http.ResponseWriter, r *http.Request) 
 	startTime := query.Get("startTime")
 	endTime := query.Get("endTime")
 	limit := query.Get("limit")
+	downsample := query.Get("downsample") // New parameter for downsampling
 
 	// Default values
 	var start, end int64
@@ -618,8 +619,18 @@ func (wm *Manager) handleMetricsHistory(w http.ResponseWriter, r *http.Request) 
 		fmt.Sscanf(limit, "%d", &limitInt)
 	}
 
-	// Get historical snapshots from database
-	snapshots, err := collector.GetHistoricalSnapshots(start, end, limitInt)
+	var snapshots []models.MetricsSnapshot
+	var err error
+
+	// Use downsampling if requested
+	if downsample == "true" || downsample == "1" {
+		// Use downsampled query with target points = limit
+		snapshots, err = collector.GetDownsampledSnapshots(start, end, limitInt)
+	} else {
+		// Use original query with limit
+		snapshots, err = collector.GetHistoricalSnapshots(start, end, limitInt)
+	}
+
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to retrieve metrics: %v", err), http.StatusInternalServerError)
 		return

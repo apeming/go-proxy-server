@@ -1,6 +1,7 @@
 export interface MetricsSnapshot {
   timestamp: number;
   activeConnections: number;
+  maxActiveConnections: number;
   totalConnections: number;
   bytesReceived: number;
   bytesSent: number;

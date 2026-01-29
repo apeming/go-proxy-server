@@ -35,14 +35,15 @@ type SystemConfig struct {
 // MetricsSnapshot stores historical metrics data
 type MetricsSnapshot struct {
 	gorm.Model
-	Timestamp         int64   // Unix timestamp
-	ActiveConnections int     // Number of active connections
-	TotalConnections  int64   // Total connections since start
-	BytesReceived     int64   // Total bytes received
-	BytesSent         int64   // Total bytes sent
-	UploadSpeed       float64 // Upload speed in bytes/sec
-	DownloadSpeed     float64 // Download speed in bytes/sec
-	ErrorCount        int64   // Total error count
+	Timestamp            int64   // Unix timestamp
+	ActiveConnections    int     // Number of active connections
+	MaxActiveConnections int     // Maximum active connections since start
+	TotalConnections     int64   // Total connections since start
+	BytesReceived        int64   // Total bytes received
+	BytesSent            int64   // Total bytes sent
+	UploadSpeed          float64 // Upload speed in bytes/sec
+	DownloadSpeed        float64 // Download speed in bytes/sec
+	ErrorCount           int64   // Total error count
 }
 
 // AlertConfig stores alert configuration

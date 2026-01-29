@@ -13,12 +13,14 @@ export async function getRealtimeMetrics(): Promise<MetricsSnapshot> {
 export async function getMetricsHistory(
   startTime?: number,
   endTime?: number,
-  limit?: number
+  limit?: number,
+  downsample?: boolean
 ): Promise<MetricsHistory[]> {
   const params = new URLSearchParams();
   if (startTime) params.append('startTime', startTime.toString());
   if (endTime) params.append('endTime', endTime.toString());
   if (limit) params.append('limit', limit.toString());
+  if (downsample) params.append('downsample', 'true');
 
   const response = await fetch(`${API_BASE}/metrics/history?${params}`);
   if (!response.ok) {

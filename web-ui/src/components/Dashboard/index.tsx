@@ -42,6 +42,19 @@ const Dashboard: React.FC = () => {
     return formatBytes(bytesPerSec) + '/s';
   };
 
+  // Get optimal unit based on maximum speed value
+  const getOptimalSpeedUnit = (data: typeof bandwidthData): { unit: string; divisor: number; decimals: number } => {
+    if (data.length === 0) return { unit: 'B/s', divisor: 1, decimals: 0 };
+
+    const maxValue = Math.max(...data.map(d => d.value));
+
+    if (maxValue === 0) return { unit: 'B/s', divisor: 1, decimals: 0 };
+    if (maxValue < 1024) return { unit: 'B/s', divisor: 1, decimals: 0 };
+    if (maxValue < 1024 * 1024) return { unit: 'KB/s', divisor: 1024, decimals: 1 };
+    if (maxValue < 1024 * 1024 * 1024) return { unit: 'MB/s', divisor: 1024 * 1024, decimals: 2 };
+    return { unit: 'GB/s', divisor: 1024 * 1024 * 1024, decimals: 2 };
+  };
+
   const formatUptime = (seconds: number): string => {
     const days = Math.floor(seconds / 86400);
     const hours = Math.floor((seconds % 86400) / 3600);
@@ -79,7 +92,7 @@ const Dashboard: React.FC = () => {
     try {
       const endTime = Math.floor(Date.now() / 1000);
       const startTime = endTime - 3600; // Last hour
-      const history = await getMetricsHistory(startTime, endTime, 60);
+      const history = await getMetricsHistory(startTime, endTime, 60, true); // Enable downsampling
       setMetricsHistory(history);
     } catch (error) {
       console.error('Failed to load metrics history:', error);
@@ -105,12 +118,12 @@ const Dashboard: React.FC = () => {
   const bandwidthData = metricsHistory.map((h) => ([
     {
       time: new Date(h.Timestamp * 1000).toLocaleTimeString(),
-      value: h.UploadSpeed / 1024 / 1024, // Convert to MB/s
+      value: h.UploadSpeed, // Keep as bytes/sec for accurate formatting
       type: '上传速度',
     },
     {
       time: new Date(h.Timestamp * 1000).toLocaleTimeString(),
-      value: h.DownloadSpeed / 1024 / 1024, // Convert to MB/s
+      value: h.DownloadSpeed, // Keep as bytes/sec for accurate formatting
       type: '下载速度',
     },
   ])).flat();
@@ -120,17 +133,56 @@ const Dashboard: React.FC = () => {
     value: h.ActiveConnections,
   }));
 
+  // Get optimal unit for bandwidth chart
+  const speedUnit = getOptimalSpeedUnit(bandwidthData);
+
   const bandwidthConfig = {
     data: bandwidthData,
     xField: 'time',
     yField: 'value',
     seriesField: 'type',
-    smooth: true,
-    animation: false, // Disable animation to prevent flashing on data updates
-    yAxis: {
-      label: {
-        formatter: (v: string) => `${v} MB/s`,
+    shapeField: 'smooth',
+    animation: false,
+    colorField: 'type',
+    scale: {
+      color: {
+        range: ['#10b981', '#3b82f6'], // Vibrant green for upload, blue for download
       },
+      y: {
+        nice: true,
+      },
+    },
+    axis: {
+      y: {
+        labelFormatter: (v: number) => {
+          return `${(v / speedUnit.divisor).toFixed(speedUnit.decimals)} ${speedUnit.unit}`;
+        },
+      },
+    },
+    interaction: {
+      tooltip: {
+        render: (_e: any, { title, items }: any) => {
+          if (!items || items.length === 0) return '';
+          return `
+            <div style="padding: 8px 12px;">
+              <div style="margin-bottom: 8px; font-weight: 500;">${title}</div>
+              ${items.map((item: any) => {
+                const speed = formatSpeed(item.value);
+                return `
+                  <div style="display: flex; align-items: center; margin-bottom: 4px;">
+                    <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${item.color}; margin-right: 8px;"></span>
+                    <span style="margin-right: 8px;">${item.name}:</span>
+                    <span style="font-weight: 500;">${speed}</span>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `;
+        },
+      },
+    },
+    style: {
+      lineWidth: 2,
     },
   };
 
@@ -210,7 +262,24 @@ const Dashboard: React.FC = () => {
         <Col xs={24} sm={12} lg={6}>
           <Card loading={loading} bordered={false}>
             <Statistic
-              title="活跃连接数"
+              title={
+                <Space size={8}>
+                  <span>活跃连接数</span>
+                  <Badge
+                    count={`峰值 ${metrics?.maxActiveConnections || 0}`}
+                    style={{
+                      backgroundColor: '#fff',
+                      color: '#ff4d4f',
+                      boxShadow: '0 0 0 1px #ffccc7 inset',
+                      fontSize: 11,
+                      height: 20,
+                      lineHeight: '20px',
+                      padding: '0 8px',
+                      borderRadius: 10
+                    }}
+                  />
+                </Space>
+              }
               value={metrics?.activeConnections || 0}
               prefix={<LinkOutlined />}
               suffix="个"
@@ -304,13 +373,13 @@ const Dashboard: React.FC = () => {
       <Row gutter={[24, 24]}>
         <Col xs={24} lg={12}>
           <Card title="带宽使用情况" bordered={false}>
-            <Line {...bandwidthConfig} height={300} />
+            <Line {...bandwidthConfig} height={200} />
           </Card>
         </Col>
 
         <Col xs={24} lg={12}>
           <Card title="连接数变化" bordered={false}>
-            <Line {...connectionsConfig} height={300} />
+            <Line {...connectionsConfig} height={200} />
           </Card>
         </Col>
       </Row>
