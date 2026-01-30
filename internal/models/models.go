@@ -43,6 +43,8 @@ type MetricsSnapshot struct {
 	BytesSent            int64   // Total bytes sent
 	UploadSpeed          float64 // Upload speed in bytes/sec
 	DownloadSpeed        float64 // Download speed in bytes/sec
+	MaxUploadSpeed       float64 // Maximum upload speed since start
+	MaxDownloadSpeed     float64 // Maximum download speed since start
 	ErrorCount           int64   // Total error count
 }
 

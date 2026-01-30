@@ -269,8 +269,8 @@ const Dashboard: React.FC = () => {
                     count={`峰值 ${metrics?.maxActiveConnections || 0}`}
                     style={{
                       backgroundColor: '#fff',
-                      color: '#ff4d4f',
-                      boxShadow: '0 0 0 1px #ffccc7 inset',
+                      color: '#1890ff',
+                      boxShadow: '0 0 0 1px #91d5ff inset',
                       fontSize: 11,
                       height: 20,
                       lineHeight: '20px',
@@ -291,7 +291,24 @@ const Dashboard: React.FC = () => {
         <Col xs={24} sm={12} lg={6}>
           <Card loading={loading} bordered={false}>
             <Statistic
-              title="上传速度"
+              title={
+                <Space size={8}>
+                  <span>上传速度</span>
+                  <Badge
+                    count={`峰值 ${metrics ? formatSpeed(metrics.maxUploadSpeed) : '0 B/s'}`}
+                    style={{
+                      backgroundColor: '#fff',
+                      color: '#52c41a',
+                      boxShadow: '0 0 0 1px #b7eb8f inset',
+                      fontSize: 11,
+                      height: 20,
+                      lineHeight: '20px',
+                      padding: '0 8px',
+                      borderRadius: 10
+                    }}
+                  />
+                </Space>
+              }
               value={metrics ? formatSpeed(metrics.uploadSpeed) : '0 B/s'}
               prefix={<CloudUploadOutlined />}
               valueStyle={{ color: '#52c41a' }}
@@ -302,7 +319,24 @@ const Dashboard: React.FC = () => {
         <Col xs={24} sm={12} lg={6}>
           <Card loading={loading} bordered={false}>
             <Statistic
-              title="下载速度"
+              title={
+                <Space size={8}>
+                  <span>下载速度</span>
+                  <Badge
+                    count={`峰值 ${metrics ? formatSpeed(metrics.maxDownloadSpeed) : '0 B/s'}`}
+                    style={{
+                      backgroundColor: '#fff',
+                      color: '#722ed1',
+                      boxShadow: '0 0 0 1px #d3adf7 inset',
+                      fontSize: 11,
+                      height: 20,
+                      lineHeight: '20px',
+                      padding: '0 8px',
+                      borderRadius: 10
+                    }}
+                  />
+                </Space>
+              }
               value={metrics ? formatSpeed(metrics.downloadSpeed) : '0 B/s'}
               prefix={<CloudDownloadOutlined />}
               valueStyle={{ color: '#722ed1' }}

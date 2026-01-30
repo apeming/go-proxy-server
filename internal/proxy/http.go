@@ -403,20 +403,20 @@ func handleHTTPSConnect(conn net.Conn, req *http.Request, bindListen bool, local
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Client to destination
+	// Client to destination (upload)
 	go func() {
 		defer wg.Done()
-		err := copyWithIdleTimeout(ctx, destConn, conn, timeout.IdleRead, timeout.IdleWrite)
+		err := copyWithIdleTimeout(ctx, destConn, conn, timeout.IdleRead, timeout.IdleWrite, true)
 		if tcpConn, ok := destConn.(*net.TCPConn); ok {
 			tcpConn.CloseWrite()
 		}
 		errChan <- err
 	}()
 
-	// Destination to client
+	// Destination to client (download)
 	go func() {
 		defer wg.Done()
-		err := copyWithIdleTimeout(ctx, conn, destConn, timeout.IdleRead, timeout.IdleWrite)
+		err := copyWithIdleTimeout(ctx, conn, destConn, timeout.IdleRead, timeout.IdleWrite, false)
 		if tcpConn, ok := conn.(*net.TCPConn); ok {
 			tcpConn.CloseWrite()
 		}

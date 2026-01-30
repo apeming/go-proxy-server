@@ -23,7 +23,8 @@ var bufferPool = sync.Pool{
 // copyWithIdleTimeout copies data from src to dst with idle timeout
 // It resets the deadline after each successful read/write operation
 // Uses buffer pool to reduce GC pressure
-func copyWithIdleTimeout(ctx context.Context, dst, src net.Conn, readTimeout, writeTimeout time.Duration) error {
+// isUpload: true for client->server (upload), false for server->client (download)
+func copyWithIdleTimeout(ctx context.Context, dst, src net.Conn, readTimeout, writeTimeout time.Duration, isUpload bool) error {
 	// Get buffer from pool
 	buf := bufferPool.Get().([]byte)
 	defer bufferPool.Put(buf) // Return buffer to pool when done
@@ -41,9 +42,15 @@ func copyWithIdleTimeout(ctx context.Context, dst, src net.Conn, readTimeout, wr
 
 		n, err := src.Read(buf)
 		if n > 0 {
-			// Record bytes received
+			// Record bytes based on direction
 			if collector := metrics.GetCollector(); collector != nil {
-				collector.RecordBytesReceived(int64(n))
+				if isUpload {
+					// Client -> Server: record as sent (upload)
+					collector.RecordBytesSent(int64(n))
+				} else {
+					// Server -> Client: record as received (download)
+					collector.RecordBytesReceived(int64(n))
+				}
 			}
 
 			// Set write deadline (idle timeout)
@@ -60,11 +67,6 @@ func copyWithIdleTimeout(ctx context.Context, dst, src net.Conn, readTimeout, wr
 					return writeErr
 				}
 				written += nw
-			}
-
-			// Record bytes sent
-			if collector := metrics.GetCollector(); collector != nil {
-				collector.RecordBytesSent(int64(n))
 			}
 		}
 

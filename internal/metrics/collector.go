@@ -27,6 +27,8 @@ type Collector struct {
 	lastBytesSent     int64
 	uploadSpeed       float64
 	downloadSpeed     float64
+	maxUploadSpeed    float64
+	maxDownloadSpeed  float64
 
 	// Background aggregation
 	stopChan         chan struct{}
@@ -111,6 +113,8 @@ func (c *Collector) GetSnapshot() *MetricsSnapshot {
 		BytesSent:            atomic.LoadInt64(&c.bytesSent),
 		UploadSpeed:          c.uploadSpeed,
 		DownloadSpeed:        c.downloadSpeed,
+		MaxUploadSpeed:       c.maxUploadSpeed,
+		MaxDownloadSpeed:     c.maxDownloadSpeed,
 		ErrorCount:           atomic.LoadInt64(&c.errorCount),
 		Uptime:               int64(time.Since(c.startTime).Seconds()),
 	}
@@ -126,6 +130,8 @@ type MetricsSnapshot struct {
 	BytesSent            int64   `json:"bytesSent"`
 	UploadSpeed          float64 `json:"uploadSpeed"`
 	DownloadSpeed        float64 `json:"downloadSpeed"`
+	MaxUploadSpeed       float64 `json:"maxUploadSpeed"`
+	MaxDownloadSpeed     float64 `json:"maxDownloadSpeed"`
 	ErrorCount           int64   `json:"errorCount"`
 	Uptime               int64   `json:"uptime"`
 }
@@ -161,6 +167,14 @@ func (c *Collector) calculateSpeeds() {
 		c.downloadSpeed = float64(currentBytesReceived-c.lastBytesReceived) / elapsed
 		c.uploadSpeed = float64(currentBytesSent-c.lastBytesSent) / elapsed
 
+		// Update max speeds
+		if c.uploadSpeed > c.maxUploadSpeed {
+			c.maxUploadSpeed = c.uploadSpeed
+		}
+		if c.downloadSpeed > c.maxDownloadSpeed {
+			c.maxDownloadSpeed = c.downloadSpeed
+		}
+
 		c.lastBytesReceived = currentBytesReceived
 		c.lastBytesSent = currentBytesSent
 		c.lastSnapshot = now
@@ -182,6 +196,8 @@ func (c *Collector) saveSnapshot() {
 		BytesSent:            atomic.LoadInt64(&c.bytesSent),
 		UploadSpeed:          c.uploadSpeed,
 		DownloadSpeed:        c.downloadSpeed,
+		MaxUploadSpeed:       c.maxUploadSpeed,
+		MaxDownloadSpeed:     c.maxDownloadSpeed,
 		ErrorCount:           atomic.LoadInt64(&c.errorCount),
 	}
 
@@ -328,5 +344,7 @@ func (c *Collector) Reset() {
 	c.lastBytesSent = 0
 	c.uploadSpeed = 0
 	c.downloadSpeed = 0
+	c.maxUploadSpeed = 0
+	c.maxDownloadSpeed = 0
 	c.mu.Unlock()
 }

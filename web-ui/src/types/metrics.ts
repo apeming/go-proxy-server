@@ -7,6 +7,8 @@ export interface MetricsSnapshot {
   bytesSent: number;
   uploadSpeed: number;
   downloadSpeed: number;
+  maxUploadSpeed: number;
+  maxDownloadSpeed: number;
   errorCount: number;
   uptime: number;
 }
@@ -23,5 +25,7 @@ export interface MetricsHistory {
   BytesSent: number;
   UploadSpeed: number;
   DownloadSpeed: number;
+  MaxUploadSpeed: number;
+  MaxDownloadSpeed: number;
   ErrorCount: number;
 }
